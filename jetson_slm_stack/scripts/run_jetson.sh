@@ -19,12 +19,12 @@ case "$CMD" in
 
   llama)
     echo "[STEP] Start LLaMA Server"
-    docker compose --profile llama up --build llama32-server
+    docker compose --profile llama up --build -d llama32-server
     ;;
 
   deepseek)
     echo "[STEP] Start DeepSeek Server"
-    docker compose --profile deepseek up --build deepseek-server
+    docker compose --profile deepseek up --build -d deepseek-server
     ;;
 
   clean)

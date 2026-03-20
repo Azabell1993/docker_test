@@ -1,10 +1,261 @@
 # Marine DX Physical AI + Network SLM Stack for Jetson Orin Nano
 
-This package is a deployable starter stack for:
-- Jetson Orin Nano edge inference with Docker Compose
-- two SLM candidates: **Meta Llama 3.2 1B Instruct** and **DeepSeek-R1-Distill-Qwen-1.5B**
-- a synthetic **marine DX Physical AI + Network** instruction dataset
-- a migration path that can be repackaged for **DGX Spark / x86 CUDA** later
+Jetson Orin Nano 엣지 디바이스에서 Docker Compose 기반으로 SLM(Small Language Model) 추론 서버를 구동하는 스택입니다.
+
+## 지원 모델
+
+| 모델 | 포트 | 특징 |
+|------|------|------|
+| `meta-llama/Llama-3.2-1B-Instruct` | 8000 | 일반 지식 / 코드 생성 |
+| `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` | 8001 | 수중 통신 / 수학 추론 특화 |
+
+## 검증된 실행 환경
+
+| 항목 | 사양 |
+|------|------|
+| 디바이스 | Jetson Orin Nano |
+| 아키텍처 | aarch64 |
+| Unified Memory | 8 GB (GPU/CPU 공유) |
+| Base Image | `nvcr.io/nvidia/pytorch:24.12-py3-igpu` |
+| Python | 3.12 |
+| PyTorch | 2.6.0a0 (Jetson NGC build) |
+| CUDA | float16, ~2.4 GB VRAM 사용 (전체 7.6 GB 중 31%) |
+| 처리량 | ~17 tok/s (`Llama-3.2-1B`, float16) |
+
+## 디렉토리 구조
+
+```
+jetson_slm_stack/
+├── .env                  ← 실행 파라미터 설정 (직접 수정)
+├── .env.example          ← .env 템플릿 (git 추적)
+├── docker-compose.yml    ← 서비스 정의
+├── app/
+│   ├── server.py         ← FastAPI 추론 서버
+│   └── download_models.py
+├── dataset/
+│   ├── generated/        ← 생성된 데이터셋 (train/val/test.jsonl)
+│   └── scripts/generate_marine_dx_dataset.py
+├── docker/
+│   ├── Dockerfile.jetson
+│   └── Dockerfile.dgx
+├── models/               ← 다운로드된 모델 가중치 (git 제외)
+├── outputs/
+└── scripts/
+    ├── run_jetson.sh
+    └── package_for_dgx.sh
+```
+
+## 빠른 시작
+
+### 1. 환경 설정
+
+```bash
+# .env 파일 확인 및 수정
+vi jetson_slm_stack/.env
+```
+
+주요 설정값 (`.env`에서 직접 수정):
+
+```env
+MAX_INPUT_TOKENS=1024   # 입력 프롬프트 최대 토큰 수
+MAX_NEW_TOKENS=512      # 응답 최대 토큰 수 (길수록 느림)
+TEMPERATURE=0.2         # 0.0(결정적) ~ 1.0(창의적)
+TOP_P=0.9
+TOP_K=40
+REPETITION_PENALTY=1.05
+LOAD_IN_4BIT=0          # 1로 설정 시 VRAM 절약 (정확도 소폭 하락)
+```
+
+> **⚠️ 중요**: `MAX_INPUT_TOKENS`, `MAX_NEW_TOKENS`는 `.env`에 반드시 존재해야 합니다.  
+> 없을 경우 서버 시작 시 오류 메시지와 함께 즉시 종료됩니다.
+
+### 2. 모델 다운로드
+
+```bash
+cd jetson_slm_stack
+docker compose run --rm model-download
+```
+
+### 3. 서버 실행
+
+```bash
+# Llama (포트 8000)
+./scripts/run_jetson.sh llama
+
+# DeepSeek (포트 8001)
+./scripts/run_jetson.sh deepseek
+```
+
+## 테스트 스크립트 (`test_slm.sh`)
+
+루트 디렉토리의 `test_slm.sh`는 서버 시작 + API 테스트 + 성능 리포트를 한번에 수행합니다.
+
+### 사용법
+
+```bash
+# 기본 실행 (서버가 올라와 있으면 테스트만)
+./test_slm.sh llama
+./test_slm.sh deepseek
+
+# 강제 이미지 재빌드 후 재시작
+./test_slm.sh llama --rebuild
+
+# 프롬프트를 파이프로 전달 (대화형 입력 건너뜀)
+echo 'What is the capital of France?' | ./test_slm.sh llama
+echo 'Explain underwater acoustic communication simply.' | ./test_slm.sh deepseek
+```
+
+### 동작 방식
+
+| 조건 | 동작 |
+|------|------|
+| 서버 이미 실행 중 + `--rebuild` 없음 | 테스트만 실행 |
+| 서버 없음 또는 `--rebuild` | 해당 서비스만 재시작 (다른 서비스 유지) |
+| `--rebuild` | `--no-cache` 빌드 |
+
+### 출력 예시 (성능 리포트)
+
+```
+════════════════════════════════════════════════
+             PERFORMANCE REPORT
+════════════════════════════════════════════════
+
+[ Model ]
+  Model ID:                      meta-llama/Llama-3.2-1B-Instruct
+  Active Device:                 cuda
+  dtype:                         torch.float16
+
+[ Token Limits ]
+  Max Input Tokens:              1024 tokens
+  Max New Tokens (default):      512 tokens
+  Max Total (in+new):            1536 tokens
+
+[ CUDA Memory  (used / total) ]
+  Allocated:          2365.3 MB / 7619.9 MB  (31.0%)
+  Reserved:           2382.0 MB / 7619.9 MB  (31.3%)
+
+[ /generate API ]
+  Prompt Tokens:      16 / 1024  (1.6%)
+  Completion Tokens:  133 / 512  (26.0%)
+  Total Tokens:       149 / 1536  (9.7%)
+  Latency:            7.496 sec
+  Throughput:         17.742 tok/s
+
+[ /v1/chat/completions API ]
+  Prompt Tokens:      65 / 1024  (6.3%)
+  Completion Tokens:  278 / 512  (54.3%)
+  Total Tokens:       343 / 1536  (22.3%)
+  Latency:            16.589 sec
+  Throughput:         17.806 tok/s
+
+════════════════════════════════════════════════
+```
+
+## API 엔드포인트
+
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `/` | GET | 서비스 상태 |
+| `/healthz` | GET | 모델 상태 + CUDA 메모리 정보 |
+| `/v1/models` | GET | 로드된 모델 목록 |
+| `/generate` | POST | Raw 텍스트 생성 |
+| `/v1/chat/completions` | POST | OpenAI 호환 채팅 API |
+
+### `/generate` vs `/v1/chat/completions` 차이
+
+| 항목 | `/generate` | `/v1/chat/completions` |
+|------|-------------|------------------------|
+| 입력 | raw 문자열 | `messages` 배열 (role/content) |
+| System Prompt | 없음 | 자동 추가 |
+| Chat Template | 미적용 | 토크나이저 chat template 적용 |
+| Prompt Tokens | 적음 (질문만) | 많음 (system + 태그 포함) |
+| 응답 품질 | 단순 completion | instruction 모델 최적화 응답 |
+| 권장 용도 | 단순 텍스트 생성 | 실제 챗봇 / 어시스턴트 |
+
+### API 예시
+
+```bash
+# Health Check
+curl http://localhost:8000/healthz | jq
+
+# Raw 생성
+curl -s -X POST http://localhost:8000/generate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "prompt": "Explain edge-first inference for marine DX telemetry.",
+    "max_new_tokens": 256,
+    "temperature": 0.2,
+    "top_p": 0.9
+  }' | jq
+
+# OpenAI 호환 채팅
+curl -s -X POST http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What are the main challenges of sonar signal processing in shallow water?"}
+    ],
+    "max_new_tokens": 256,
+    "temperature": 0.2
+  }' | jq
+```
+
+## 파라미터 튜닝 가이드
+
+`.env` 파일만 수정하고 컨테이너를 재시작하면 적용됩니다.
+
+```bash
+# 컨테이너 재시작 (llama 예시)
+docker compose -f jetson_slm_stack/docker-compose.yml rm -sf llama32-server
+./jetson_slm_stack/scripts/run_jetson.sh llama
+```
+
+| 목적 | 권장 설정 |
+|------|----------|
+| 빠른 테스트 | `MAX_NEW_TOKENS=128`, `MAX_INPUT_TOKENS=512` |
+| 균형 | `MAX_NEW_TOKENS=256`, `MAX_INPUT_TOKENS=1024` |
+| 코드/긴 답변 | `MAX_NEW_TOKENS=512`, `MAX_INPUT_TOKENS=1024` |
+| 사실 질문 | `TEMPERATURE=0.0` |
+| 창의적 응답 | `TEMPERATURE=0.7`, `TOP_P=0.95` |
+| VRAM 절약 | `LOAD_IN_4BIT=1` |
+
+## 데이터셋
+
+`marine DX Physical AI + Network` 도메인 특화 합성 데이터:
+
+```
+dataset/generated/
+├── train.jsonl    ← 학습용
+├── val.jsonl      ← 검증용
+├── test.jsonl     ← 테스트용
+└── manifest.json  ← 메타데이터
+```
+
+생성 스크립트: `dataset/scripts/generate_marine_dx_dataset.py`
+
+## DGX Spark 마이그레이션
+
+```bash
+./scripts/package_for_dgx.sh
+```
+
+DGX 측
+
+```bash
+tar -xzf marine-dx-slm-stack-dgx-portable.tar.gz
+cp .env.example .env
+# HF_TOKEN, BASE_IMAGE 수정
+```
+
+## 개발시 발생하였던 이슈에 대하여 해결한 점
+
+| 문제 | 원인 | 해결 |
+|------|------|------|
+| `ModuleNotFoundError: torch._C._distributed_c10d` | Jetson NGC PyTorch에 distributed 모듈 미포함 | `server.py` 내 FSDP monkey-patch 적용 완료 |
+| CUDA OOM (NvMapMemHandleAlloc error 12) | `device_map="auto"` 사용 시 Tegra iGPU 커널 레벨 OOM | CPU 먼저 로드 후 `.to("cuda")` 2단계 방식으로 해결 |
+| JSON decode error (프롬프트에 큰따옴표 포함) | shell 변수 직접 삽입 시 JSON 파괴 | `jq -n --arg`로 안전한 JSON 생성 |
+| Postman Cloud Agent에서 접근 불가 | 클라우드 서버에서 사설 IP 차단 | Postman Desktop Agent로 전환 |
+
 
 ## Directory layout
 
@@ -40,77 +291,3 @@ curl http://localhost:8001/healthz
 ./scripts/run_jetson.sh deepseek
 curl http://localhost:8002/healthz
 ```
-
-## Benchmark both services
-
-Running both models concurrently may exceed the practical memory envelope on an 8 GB Orin Nano. If that happens, benchmark sequentially.
-
-```bash
-./scripts/run_jetson.sh benchmark
-```
-
-Outputs are saved under `outputs/`.
-
-## API examples
-
-### Generic generation
-
-```bash
-curl -X POST http://localhost:8001/generate \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "prompt": "Explain edge-first inference for marine DX telemetry.",
-    "max_new_tokens": 128,
-    "temperature": 0.1
-  }'
-```
-
-### OpenAI-compatible chat route
-
-```bash
-curl -X POST http://localhost:8002/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "messages": [
-      {"role":"system","content":"You are a marine network copilot."},
-      {"role":"user","content":"Give a 5-step response plan for packet loss in a polar gateway."}
-    ]
-  }'
-```
-
-## Dataset design
-
-The synthetic dataset intentionally targets these domain concepts:
-- marine DX
-- edge AI / physical AI
-- network transport under intermittent or harsh conditions
-- latency-aware operational actions
-- later migration to larger DGX-class training or evaluation environments
-
-Generated files:
-- `dataset/generated/train.jsonl`
-- `dataset/generated/val.jsonl`
-- `dataset/generated/test.jsonl`
-- `dataset/generated/manifest.json`
-
-## DGX Spark migration path
-
-```bash
-./scripts/package_for_dgx.sh
-```
-
-Then on the DGX side:
-
-```bash
-tar -xzf marine-dx-slm-stack-dgx-portable.tar.gz
-cp .env.example .env
-# or use release/.env.dgx.example as a starting point
-# adjust HF_TOKEN and model settings
-```
-
-## Notes on operational tuning
-
-- Start with one model container at a time on Orin Nano.
-- Keep `max_new_tokens` small for latency control.
-- Preserve `outputs/` and `dataset/generated/` so the same prompts and data can be reused on DGX Spark.
-- If you later add LoRA or QLoRA, keep the dataset schema unchanged so fine-tuning, evaluation, and prompt-only baselines remain comparable.

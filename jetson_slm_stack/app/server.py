@@ -62,8 +62,24 @@ else:
 
 DTYPE = os.getenv("DTYPE", "float16" if DEVICE == "cuda" else "float32").lower()
 
-MAX_INPUT_TOKENS = int(os.getenv("MAX_INPUT_TOKENS", "512"))
-MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "128"))
+def _require_env_int(key: str) -> int:
+    val = os.getenv(key)
+    if val is None:
+        raise RuntimeError(
+            f"[CONFIG ERROR] Environment variable '{key}' is not set.\n"
+            f"  → Please set it in jetson_slm_stack/.env and restart the container.\n"
+            f"  → Example: {key}=512"
+        )
+    try:
+        return int(val)
+    except ValueError:
+        raise RuntimeError(
+            f"[CONFIG ERROR] Environment variable '{key}={val}' is not a valid integer.\n"
+            f"  → Please fix it in jetson_slm_stack/.env and restart the container."
+        )
+
+MAX_INPUT_TOKENS = _require_env_int("MAX_INPUT_TOKENS")
+MAX_NEW_TOKENS   = _require_env_int("MAX_NEW_TOKENS")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 TOP_P = float(os.getenv("TOP_P", "0.9"))
 TOP_K = int(os.getenv("TOP_K", "40"))
@@ -162,6 +178,9 @@ def resolve_model_device(model_obj: Any) -> torch.device:
 def get_autocast_context(device: str, dtype: torch.dtype):
     if device == "cuda":
         return torch.autocast(device_type="cuda", dtype=dtype)
+    if dtype in (torch.float16, torch.bfloat16):
+        # Enable CPU autocast so float16/bf16 ops run correctly on CPU
+        return torch.autocast(device_type="cpu", dtype=dtype)
     return nullcontext()
 
 
@@ -231,22 +250,43 @@ def load_model() -> Tuple[Any, str, str, bool]:
                 torch_dtype=torch.float32,
             )
     else:
-        # Step 1: Always load onto CPU first — avoids Tegra iGPU kernel-level OOM
-        # (NvMapMemAllocInternalTagged error 12) that occurs when device_map="auto"
-        # tries to place tensors directly into CUDA during from_pretrained.
-        print(f"[INFO] Loading model to CPU first (dtype={runtime_dtype})...")
-        model_obj = AutoModelForCausalLM.from_pretrained(
-            MODEL_SOURCE,
-            trust_remote_code=True,
-            low_cpu_mem_usage=True,
-            torch_dtype=runtime_dtype,
-        )
-        print("[INFO] CPU load successful")
-        load_mode = str(runtime_dtype).replace("torch.", "")
-        active_device = "cpu"
-
-        # Step 2: Try moving to CUDA only if requested and GPU is available
         if DEVICE == "cuda" and HAS_CUDA:
+            # Strategy 1: CPU load → move to CUDA
+            # Load to CPU first (clean, no CUDA involvement during from_pretrained),
+            # then move to CUDA. Peak during .to("cuda") = CPU copy + CUDA copy.
+            # Strategy 2 (direct device_map=cuda:0) was removed because on Jetson
+            # the partial CUDA allocation on failure leaks nvmap memory, which then
+            # OOM-kills the subsequent CPU fal lback (exit 137).
+            _avail_mb = 0
+            try:
+                with open("/proc/meminfo") as _f:
+                    for _line in _f:
+                        if _line.startswith("MemAvailable"):
+                            _avail_mb = int(_line.split()[1]) // 1024
+                            break
+            except Exception:
+                pass
+            print(f"[INFO] Available RAM: {_avail_mb} MB")
+
+            if _avail_mb > 0 and _avail_mb < 2500:
+                print(f"[ERROR] Insufficient RAM ({_avail_mb}MB < 2500MB). Reboot recommended.")
+                raise RuntimeError(
+                    f"Not enough RAM to load model ({_avail_mb}MB available, need ~2500MB). "
+                    "Please reboot the Jetson to clear nvmap/CUDA state."
+                )
+
+            print(f"[INFO] Loading model to CPU (dtype={runtime_dtype})...")
+            model_obj = AutoModelForCausalLM.from_pretrained(
+                MODEL_SOURCE,
+                trust_remote_code=True,
+                low_cpu_mem_usage=True,
+                torch_dtype=runtime_dtype,
+            )
+            print("[INFO] CPU load successful")
+            active_device = "cpu"
+            load_mode = str(runtime_dtype).replace("torch.", "")
+
+            # Attempt to move to CUDA
             print("[INFO] Attempting to move model to CUDA...")
             cleanup_memory()
             try:
@@ -256,14 +296,27 @@ def load_model() -> Tuple[Any, str, str, bool]:
             except Exception as e:
                 print(f"[WARN] CUDA move failed ({e}), staying on CPU")
                 cleanup_after_oom()
-                # Convert to float32 on CPU: float16 on CPU has limited op support
-                # and can cause dtype mismatch errors during inference
-                if runtime_dtype in (torch.float16, torch.bfloat16):
-                    print("[INFO] Converting model to float32 for CPU inference compatibility")
-                    model_obj = model_obj.to(torch.float32)
-                    load_mode = "cpu-float32"
-                else:
-                    load_mode = f"cpu-{str(runtime_dtype).replace('torch.', '')}"
+                # Model is already on CPU from from_pretrained — no reload needed.
+                # Just ensure it stays on CPU and update load_mode.
+                try:
+                    model_obj = model_obj.cpu()
+                except Exception:
+                    pass
+                active_device = "cpu"
+                load_mode = f"cpu-{str(runtime_dtype).replace('torch.', '')}"
+                print(f"[INFO] Staying on CPU, load_mode={load_mode}")
+        else:
+            # No CUDA requested or not available — load directly to CPU
+            print(f"[INFO] Loading model to CPU (dtype=float32)...")
+            model_obj = AutoModelForCausalLM.from_pretrained(
+                MODEL_SOURCE,
+                trust_remote_code=True,
+                low_cpu_mem_usage=True,
+                torch_dtype=torch.float32,
+            )
+            active_device = "cpu"
+            load_mode = "cpu-float32"
+            print("[INFO] CPU load successful")
 
     model_obj.eval()
     if hasattr(model_obj.config, "use_cache"):

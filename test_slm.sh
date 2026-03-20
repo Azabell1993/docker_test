@@ -31,6 +31,18 @@ echo ""
 COMPOSE_DIR="$(cd "$(dirname "$0")/jetson_slm_stack" && pwd)"
 COMPOSE_FILE="$COMPOSE_DIR/docker-compose.yml"
 
+# .env에서 MAX_NEW_TOKENS 읽기 (없으면 128 기본값)
+ENV_FILE="$COMPOSE_DIR/.env"
+TEST_MAX_NEW_TOKENS=$(grep -E '^MAX_NEW_TOKENS=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2)
+TEST_MAX_NEW_TOKENS=${TEST_MAX_NEW_TOKENS:-128}
+TEST_TEMPERATURE=$(grep -E '^TEMPERATURE=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2)
+TEST_TEMPERATURE=${TEST_TEMPERATURE:-0.2}
+TEST_TOP_P=$(grep -E '^TOP_P=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2)
+TEST_TOP_P=${TEST_TOP_P:-0.9}
+
+echo "  [Config] max_new_tokens=$TEST_MAX_NEW_TOKENS  temperature=$TEST_TEMPERATURE  top_p=$TEST_TOP_P"
+echo ""
+
 # 서버가 이미 올라와 있고 --rebuild 아니면 테스트만 실행
 if curl -sf http://localhost:$PORT/healthz > /dev/null 2>&1 && [ "$REBUILD" != "--rebuild" ]; then
     echo "--- Server already running on port $PORT, skipping startup ---"
@@ -72,9 +84,9 @@ echo "--- [TEST] Generation API ---"
 echo "  Prompt: \"$PROMPT\""
 GEN_PAYLOAD=$(jq -n \
   --arg     prompt         "$PROMPT" \
-  --argjson max_new_tokens 64 \
-  --argjson temperature    0.2 \
-  --argjson top_p          0.9 \
+  --argjson max_new_tokens $TEST_MAX_NEW_TOKENS \
+  --argjson temperature    $TEST_TEMPERATURE \
+  --argjson top_p          $TEST_TOP_P \
   '{prompt: $prompt, max_new_tokens: $max_new_tokens, temperature: $temperature, top_p: $top_p}')
 GEN_RESP=$(curl -s -X POST http://localhost:$PORT/generate \
   -H "Content-Type: application/json" \
@@ -86,9 +98,9 @@ echo "--- [TEST] Chat Completions API ---"
 echo "  Prompt: \"$PROMPT\""
 CHAT_PAYLOAD=$(jq -n \
   --arg     content        "$PROMPT" \
-  --argjson max_new_tokens 64 \
-  --argjson temperature    0.2 \
-  --argjson top_p          0.9 \
+  --argjson max_new_tokens $TEST_MAX_NEW_TOKENS \
+  --argjson temperature    $TEST_TEMPERATURE \
+  --argjson top_p          $TEST_TOP_P \
   '{messages: [{role: "user", content: $content}], max_new_tokens: $max_new_tokens, temperature: $temperature, top_p: $top_p}')
 CHAT_RESP=$(curl -s -X POST http://localhost:$PORT/v1/chat/completions \
   -H "Content-Type: application/json" \

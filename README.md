@@ -262,7 +262,7 @@ NvMapMemHandleAlloc: error 0
 
 ### 해결 방법
 
-**다음 최적화가 자동 적용됨:**
+**다음 최적화가 자동 적용됨**
 
 #### 1. 모델 로드 최적화
 - `device_map="auto"` 사용으로 CPU 오프로딩 활성화
@@ -320,7 +320,7 @@ environment:
 
 ---
 
-## 📄 LLM API 서버 연동 및 상태 보고서
+## LLM API 서버 연동 및 상태 보고서
 
 ### 1. 시스템 정보 (Health Check)
 서버의 가동 상태와 모델 로드 사양입니다.

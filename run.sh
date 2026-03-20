@@ -1,14 +1,22 @@
-#/!/bin/bash
+#!/bin/bash
+# run.sh — 전체 스택 초기화 + 서버 기동
+# 사용법: ./run.sh
 
-cd ~/jiwoo_research_docker/jetson_slm_stack
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+COMPOSE_DIR="$SCRIPT_DIR/jetson_slm_stack"
+COMPOSE_FILE="$COMPOSE_DIR/docker-compose.yml"
+RUN_JETSON="$COMPOSE_DIR/scripts/run_jetson.sh"
 
-docker compose down
+cd "$COMPOSE_DIR"
+
+echo "--- [1/4] Stopping all services ---"
+docker compose -f "$COMPOSE_FILE" down
+
+echo "--- [2/4] Pruning build cache ---"
 docker builder prune -af
 
-docker compose build --no-cache
-./jetson_slm_stack/scripts/run_jetson.sh prep
-./jetson_slm_stack/scripts/run_jetson.sh download
-./jetson_slm_stack/scripts/run_jetson.sh llama
+echo "--- [3/4] Building images ---"
+docker compose -f "$COMPOSE_FILE" build --no-cache
 
-# clean
-# ./jetson_slm_stack/scripts/run_jetson.sh clean
+echo "--- [4/4] Starting llama server ---"
+"$RUN_JETSON" llama
