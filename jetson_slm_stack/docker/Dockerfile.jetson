@@ -1,0 +1,50 @@
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.12-py3-igpu
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/workspace/.cache/huggingface \
+    HF_HUB_CACHE=/workspace/.cache/huggingface/hub \
+    HUGGINGFACE_HUB_CACHE=/workspace/.cache/huggingface/hub \
+    DEVICE=cuda \
+    DTYPE=float16 \
+    LOAD_IN_4BIT=0 \
+    BNB_4BIT_COMPUTE_DTYPE=float16 \
+    BNB_4BIT_QUANT_TYPE=nf4 \
+    BNB_4BIT_USE_DOUBLE_QUANT=0 \
+    MAX_INPUT_TOKENS=1536 \
+    MAX_NEW_TOKENS=256 \
+    TEMPERATURE=0.2 \
+    TOP_P=0.9 \
+    TOP_K=50 \
+    REPETITION_PENALTY=1.05 \
+    ENABLE_TORCH_COMPILE=0 \
+    EMPTY_CACHE_EACH_REQUEST=0
+
+RUN apt-get update && apt-get install -y \
+    python3-pip python3-dev git curl ca-certificates \
+    libopenblas-dev \
+    gnupg2 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --upgrade pip setuptools wheel
+RUN python3 -m pip install numpy==1.26.1
+
+RUN python3 -m pip install \
+    fastapi \
+    "uvicorn[standard]" \
+    "transformers==4.48.3" \
+    "accelerate==1.2.1" \
+    sentencepiece \
+    safetensors \
+    "huggingface_hub<0.30" \
+    pydantic \
+    bitsandbytes
+
+WORKDIR /workspace
+COPY app /workspace/app
+COPY dataset /workspace/dataset
+COPY scripts /workspace/scripts
+
+CMD ["bash"]

@@ -1,0 +1,107 @@
+services:
+  dataset-prep:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.jetson
+      args:
+        BASE_IMAGE: ${BASE_IMAGE}
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    command: python3 dataset/scripts/generate_marine_dx_dataset.py
+
+  model-download:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.jetson
+      args:
+        BASE_IMAGE: ${BASE_IMAGE}
+    env_file:
+      - .env
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    command: python3 app/download_models.py
+
+  llama32-server:
+    ipc: host
+    shm_size: "8gb"
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.jetson
+      args:
+        BASE_IMAGE: ${BASE_IMAGE}
+    runtime: nvidia
+    environment:
+      DEVICE: "cuda"
+      DTYPE: "float16"
+      LOAD_IN_4BIT: "0"
+      MAX_INPUT_TOKENS: "512"
+      MAX_NEW_TOKENS: "128"
+      TEMPERATURE: "0.2"
+      TOP_P: "0.9"
+      TOP_K: "40"
+      REPETITION_PENALTY: "1.05"
+      ENABLE_WARMUP: "1"
+      EMPTY_CACHE_ON_OOM: "1"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      MODEL_ID: ${LLAMA_MODEL_ID}
+      # Jetson VRAM 최적화: 할당자가 메모리를 조각내지 않고 필요한 만큼만 사용하도록 제한
+      PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:64,garbage_collection_threshold:0.8,expandable_segments:True"
+      LD_LIBRARY_PATH: "/usr/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu/libcudss/12:${LD_LIBRARY_PATH}"
+    env_file:
+      - .env
+    volumes:
+      - ./:/workspace
+      - /usr/lib/aarch64-linux-gnu/libcudss.so.0:/usr/lib/aarch64-linux-gnu/libcudss.so.0:ro
+      - /usr/lib/aarch64-linux-gnu/libcudss:/usr/lib/aarch64-linux-gnu/libcudss:ro
+    working_dir: /workspace
+    ports:
+      - "8000:8000"
+    command: python3 app/server.py --port 8000
+    profiles: ["llama"]
+
+  deepseek-server:
+    ipc: host
+    shm_size: "8gb"
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.jetson
+      args:
+        BASE_IMAGE: ${BASE_IMAGE}
+    runtime: nvidia
+    environment:
+      DEVICE: "cuda"
+      DTYPE: "float16"
+      LOAD_IN_4BIT: "0"
+      MAX_INPUT_TOKENS: "512"
+      MAX_NEW_TOKENS: "128"
+      TEMPERATURE: "0.2"
+      TOP_P: "0.9"
+      TOP_K: "40"
+      REPETITION_PENALTY: "1.05"
+      ENABLE_WARMUP: "1"
+      EMPTY_CACHE_ON_OOM: "1"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      MODEL_ID: ${DEEPSEEK_MODEL_ID}
+      PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:64,garbage_collection_threshold:0.8,expandable_segments:True"
+      LD_LIBRARY_PATH: "/usr/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu/libcudss/12:${LD_LIBRARY_PATH}"
+    env_file:
+      - .env
+    volumes:
+      - ./:/workspace
+      - /usr/lib/aarch64-linux-gnu/libcudss.so.0:/usr/lib/aarch64-linux-gnu/libcudss.so.0:ro
+      - /usr/lib/aarch64-linux-gnu/libcudss:/usr/lib/aarch64-linux-gnu/libcudss:ro
+    working_dir: /workspace
+    ports:
+      - "8001:8001"
+    command: python3 app/server.py --port 8001
+    profiles: ["deepseek"]

@@ -1,0 +1,17 @@
+# Python & OS cache
+.cache/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Environment variables
+.env
+jetson_slm_stack/.env
+
+# Large Files & Models (Essential!)
+jetson_slm_stack/models/
+jetson_slm_stack.tar
+*.log
+
+# Exclude all files in cache directories
+jetson_slm_stack/.cache/
