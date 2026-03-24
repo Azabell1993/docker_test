@@ -47,4 +47,7 @@ COPY app /workspace/app
 COPY dataset /workspace/dataset
 COPY scripts /workspace/scripts
 
+# C++ 확장 빌드 (safe_ops: CPU half-precision NaN 방지)
+RUN cd /workspace/app/csrc && python3 setup.py install
+
 CMD ["bash"]

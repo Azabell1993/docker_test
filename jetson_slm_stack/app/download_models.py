@@ -3,12 +3,15 @@ from huggingface_hub import snapshot_download
 
 hf_token = os.environ.get("HF_TOKEN")
 cache_dir = os.environ.get("MODEL_CACHE_DIR", "./models")
+
+# ── 다운로드 대상 모델 목록 ──────────────────────────────────────
 llama_model = os.environ.get("LLAMA_MODEL_ID", "meta-llama/Llama-3.2-1B-Instruct")
 deepseek_model = os.environ.get("DEEPSEEK_MODEL_ID", "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+qwen_model = os.environ.get("QWEN_MODEL_ID", "Qwen/Qwen2.5-1.5B-Instruct")
 
 os.makedirs(cache_dir, exist_ok=True)
 
-for model_id in [llama_model, deepseek_model]:
+for model_id in [llama_model, deepseek_model, qwen_model]:
     local_dir = os.path.join(cache_dir, model_id.replace("/", "__"))
     print(f"Downloading {model_id} -> {local_dir}")
     snapshot_download(

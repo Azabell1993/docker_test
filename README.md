@@ -1,40 +1,213 @@
 # Jetson SLM Stack (Marine DX Physical AI)
 
-Jetson Orin Nano 환경에서 Docker 기반으로 SLM(LLaMA / DeepSeek)을 구동하기 위한 구현한 추론 서버 스택
+Jetson Orin Nano 환경에서 Docker Compose 기반으로 소형 언어모델 추론 서버를 구동하기 위한 스택입니다. 현재는 Llama, DeepSeek, Qwen을 서비스별로 분리해 실행할 수 있고, Jetson Unified Memory 제약 때문에 발생하는 CUDA allocator 문제를 줄이기 위해 하이브리드 GPU offload와 네이티브 CUDA 프로브를 사용합니다.
 
----
 
-## 플랫폼 사양
+| 항목 | 상태 |
+|------|------|
+| 지원 모델 | `llama`, `deepseek`, `qwen` |
+| API 서버 | FastAPI + uvicorn |
+| 테스트 스크립트 | `test_slm.sh`에서 서버 시작, API 검증, 성능 리포트 수행 |
+| GPU 사용 방식 | 전체 GPU 적재 대신 저메모리 `cuda-offload-*` 하이브리드 모드 우선 |
+| CPU 폴백 | CUDA 배치 실패 시 `cpu-bfloat16` 폴백 |
+| 네이티브 확장 | `safe_ops` (`.cpp` + `.cu`) 빌드 후 서버에서 사용 |
+
+## 플랫폼 특성
 
 | 항목 | 값 |
 |------|----|
 | 플랫폼 | `NVIDIA Jetson Orin Nano` |
 | 베이스 이미지 | `nvcr.io/nvidia/pytorch:24.12-py3-igpu` |
 | 아키텍처 | `aarch64 (arm64)` |
-| Unified Memory | `8GB (CPU/GPU 공유)` |
-| GPU 사용 메모리 | `~2,374 MB` (모델 로드 시, 31.2%) |
-| 추론 속도 | `~17 tok/s` (CUDA float16) |
+| 메모리 구조 | Unified Memory, CPU/GPU 공유 |
+| 주요 제약 | GPU free memory 숫자와 실제 `cudaMalloc` 가능 용량이 다를 수 있음 |
 
----
+Jetson에서는 다음 현상이 중요합니다.
+
+1. `torch.cuda.is_available()`가 `true`여도 실제 모델 배치가 실패할 수 있습니다.
+2. `device_map="auto"`만으로는 allocator assert 또는 `NvMapMemAllocInternalTagged` 오류가 날 수 있습니다.
+3. 따라서 실제 할당 가능한 GPU budget을 먼저 찾고, 그 budget 안에서만 일부 레이어를 GPU에 올리는 전략이 필요합니다.
 
 ## 지원 모델
 
-| 모델 | 파라미터 | 정밀도 | VRAM |
-|------|---------|--------|------|
-| `meta-llama/Llama-3.2-1B-Instruct` | 1B | float16 | ~2.4 GB |
-| `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` | 1.5B | float16 | ~3.0 GB |
+| 모델 키 | 모델 ID | 포트 | 비고 |
+|--------|---------|------|------|
+| `llama` | `meta-llama/Llama-3.2-1B-Instruct` | `8000` | 현재 GPU offload 검증의 기준 모델 |
+| `deepseek` | `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` | `8001` | 1.5B급, 메모리 압박 더 큼 |
+| `qwen` | `Qwen/Qwen2.5-1.5B-Instruct` | `8002` | multi-service 테스트용 |
 
-> **3B 이상은 로드 시 OOM 위험, 7B 이상은 불가.**  
-> Jetson Orin iGPU(sm_87)에서 `bitsandbytes` 미지원으로 4-bit 양자화 불가.
+## 아키텍처
+
+핵심 경로는 아래와 같습니다.
+
+1. `jetson_slm_stack/app/server.py`
+  모델 로드, GPU offload, CPU 폴백, 생성 API, 헬스체크 담당
+2. `jetson_slm_stack/app/csrc/safe_ops.cpp`
+  Python과 네이티브 코드를 연결하는 pybind 바인딩
+3. `jetson_slm_stack/app/csrc/safe_ops_cuda.cu`
+  실제 `cudaMalloc` 기반 메모리 프로브와 llama split 계산 담당
+4. `jetson_slm_stack/docker/Dockerfile.jetson`
+  이미지 빌드 중 `safe_ops`를 컴파일
+5. `test_slm.sh`
+  파이프 입력, JSON-safe 응답 출력, `/generate`와 `/v1/chat/completions` 성능 리포트 제공
+
+## 네이티브 `.cpp` / `.cu` 역할
+
+이번 구조에서 네이티브 코드는 단순한 부가 기능이 아니라 GPU 안정화에 직접 관여합니다.
+
+### `.cpp`의 역할
+
+파일: `jetson_slm_stack/app/csrc/safe_ops.cpp`
+
+1. Python에서 호출할 수 있는 모듈 `safe_ops`를 정의합니다.
+2. `configure_runtime()`로 PyTorch CPU thread 설정을 적용합니다.
+3. `.cu`에서 구현한 `get_cuda_mem_info`, `probe_cuda_budget`, `probe_llama_cuda_split`을 Python으로 노출합니다.
+
+즉 `.cpp`는 서버와 네이티브 코드를 연결하는 브리지입니다.
+
+### `.cu`의 역할
+
+파일: `jetson_slm_stack/app/csrc/safe_ops_cuda.cu`
+
+1. `cudaMemGetInfo()`로 free/total memory를 읽습니다.
+2. `try_alloc_mb()`로 특정 크기 메모리를 실제 할당해봅니다.
+3. `probe_cuda_budget()`으로 안전한 GPU 예산을 계산합니다.
+4. `probe_llama_cuda_split()`으로 llama에서 GPU에 올릴 수 있는 레이어 수를 보수적으로 산정합니다.
+
+즉 `.cu`는 “GPU가 실제로 감당 가능한 만큼만 쓰게 만드는 판단 엔진”입니다.
+
+## 개선 리포트
+
+### 개선 배경
+
+Jetson 환경에서는 `torch.cuda.is_available()`가 `true`라고 해서 실제 서비스가 안정적으로 GPU 추론을 수행할 수 있는 것은 아니었다.   
+특히 Unified Memory 구조와 Jetson allocator 특성 때문에 다음 문제가 반복적으로 발생하였음
+
+1. free memory 수치상으로는 충분해 보여도 실제 `cudaMalloc` 단계에서 실패
+2. `device_map="auto"` 사용 시 allocator assert 또는 `NvMapMemAllocInternalTagged` 오류 발생
+3. 모델 로드는 되었지만 첫 `generate()` 시점에서 500 에러 발생
+4. 서버의 실제 오류와 테스트 스크립트의 JSON 파싱 오류가 섞여 원인 분리가 어려움
+
+이 문제를 해결하기 위해, Python 추정만으로 GPU를 쓰지 않고 네이티브 `.cpp` / `.cu` 코드를 추가해 실제 CUDA 상태를 직접 확인하도록 변경함
+
+### 따라서, 아래와 같은 코드를 작성함
+
+###### 파일: `jetson_slm_stack/app/csrc/safe_ops.cpp`
+
+`.cpp`는 Python 서버와 네이티브 기능 사이의 연결 계층 용도로 작성하였으며, 이 파일이 필요한 이유는 아래와 같다.
+
+1. Python에서 CUDA 관련 저수준 기능을 안정적으로 호출할 수 있는 `safe_ops` 모듈을 제공하도록 설계
+2. `.cu`에서 구현한 CUDA 메모리 프로브 로직을 서버에서 직접 재사용할 수 있게 구성
+3. CPU fallback 시 PyTorch thread 수를 일관되게 제어할 수 있도록 반영
+
+**구현 정의**
+
+1. Python import 가능한 `safe_ops` 모듈 정의
+2. `configure_runtime()`로 CPU intra-op / inter-op thread 설정 적용
+3. `get_cuda_mem_info`, `probe_cuda_budget`, `probe_llama_cuda_split`를 Python으로 노출
+
+즉 `.cpp`는 단독으로 성능을 올리는 코드라기보다, 서버가 네이티브 CUDA 판단 로직을 사용할 수 있게 만드는 Bridge 용도로 이해하면 쉬움.
+
+###### 파일: `jetson_slm_stack/app/csrc/safe_ops_cuda.cu`
+
+`.cu`는 실제 GPU 안정화 판단을 수행하는 핵심 코드로 작성하였으며, 이 파일이 필요한 이유는 아래와 같다.
+
+1. Jetson에서는 free memory 수치와 실제 할당 가능 메모리가 다를 수 있음
+2. 따라서 Python에서 단순히 숫자만 읽는 방식으로는 안전한 GPU budget을 판단하기 어려움
+3. 실제 `cudaMalloc`을 시도해봐야 “지금 이 환경에서 몇 MB까지 안전하게 쓸 수 있는지” 알 수 있음
+
+** 구현 정의**
+
+1. `cudaMemGetInfo()`로 free / total memory 조회
+2. `try_alloc_mb()`로 특정 용량을 실제 할당해 안전성 확인
+3. `probe_cuda_budget()`으로 안전한 GPU budget 계산
+4. `probe_llama_cuda_split()`으로 llama 레이어 중 GPU에 올릴 수 있는 범위를 보수적으로 산정
+
+즉 `.cu`는 “GPU가 실제로 감당 가능한 만큼만 쓰게 만드는 판단 엔진” 이라고 이해하면 쉬움.
+
+### 코드 최적화 내용
+1. Jetson FSDP import 문제를 우회해 `generate()` 내부 500 가능성을 제거
+2. GPU 전체 적재 대신 `cuda-offload-*` 하이브리드 경로를 우선 사용하도록 변경
+3. GPU 예산을 Python 추정치가 아니라 네이티브 CUDA 프로브 결과로 결정
+4. 실패 시 서버를 죽이지 않고 `cpu-bfloat16` 폴백으로 생존성 확보
+5. `test_slm.sh`가 비JSON 응답에도 깨지지 않도록 변경해 실제 서버 오류와 파싱 오류를 분리
+
+### 각 최적화의 필요성과 개선점
+
+#### 1. Jetson FSDP import 우회
+1. Jetson NGC PyTorch 빌드에는 일부 distributed/FSDP 경로가 비어 있음
+2. `transformers.generate()` 내부에서 해당 경로가 호출되면 서비스가 500으로 실패할 수 있음
+
+반영한 점:
+1. 모델은 떠 있는데 생성 API만 죽는 문제를 줄임
+2. `/generate`와 `/v1/chat/completions`의 기본 안정성 확보
+
+#### 2. 전체 GPU 적재 대신 하이브리드 offload 우선
+1. Jetson 환경에서는 모델 전체를 GPU로 올리는 시도가 allocator 실패를 유발하기 쉬움
+2. 일부 레이어만 GPU에 두는 방식이 더 현실적이고 재현성이 높음
+
+반영한 점:
+1. `active_device=cuda` 상태를 유지하면서도 OOM 확률 감소
+2. 전체 실패 대신 부분 GPU 활용 가능
+3. `cuda-offload-640mb` 같은 명시적 로드 모드로 현재 상태 확인 가능
+
+#### 3. Python 추정 대신 네이티브 CUDA 프로브 기반 budget 결정
+1. free memory 수치만으로는 Jetson allocator의 실제 동작을 설명하기 어려움
+2. 서비스 시작 시 보이는 메모리와 실제 로딩 시 쓸 수 있는 메모리가 다를 수 있음
+
+반영한 점:
+1. “보이기만 하는 메모리”가 아니라 “실제로 할당 가능한 메모리” 기준으로 로드
+2. 로드 전략이 추정 기반에서 실측 기반으로 전환
+3. GPU 사용 안정성 향상
+
+#### 4. `cpu-bfloat16` 폴백 추가
+1. GPU 로드 실패를 서버 전체 실패로 두면 운영 안정성이 크게 떨어짐
+2. Jetson 환경에서는 일시적 allocator 실패가 발생할 수 있으므로, 살아있는 fallback 경로가 필요함
+
+반영한 점 :
+1. GPU 실패 시에도 서버 API 유지
+2. 단순 다운 대신 응답 가능한 CPU 모드로 전환
+3. `load_mode`를 통해 실제 동작 모드 추적 가능
+
+#### 5. `test_slm.sh` 파싱 안정화
+1. 이전에는 비JSON 응답을 무조건 `jq`에 넘겨 `parse error`가 먼저 발생함
+2. 이 때문에 서버 자체의 500과 스크립트의 파싱 실패가 섞여 보였음
+
+반영한 점:
+1. HTTP 상태 코드와 응답 본문을 분리 수집
+2. JSON일 때만 `jq`로 파싱
+3. 비JSON 응답은 그대로 출력
+4. 실제 서버 오류와 테스트 도구 오류를 명확히 구분 가능
+
+### 반영 결과
+1. Jetson에서 GPU 사용 여부를 추정이 아니라 실측 기준으로 판단
+2. 전체 GPU 적재 실패를 줄이고 하이브리드 GPU 사용 경로 확보
+3. GPU 실패 시에도 CPU `bfloat16` 폴백으로 서버 생존성 유지
+4. 생성 API의 Jetson 환경 500 가능성 감소
+5. 테스트 스크립트를 통해 오류 원인 분리가 쉬워짐
+6. `healthz`의 `active_device`, `model_device`, `load_mode`를 통해 실제 런타임 상태를 명확히 확인 가능
+
+### 반영하기 전 겪은 이슈
+1. Python이 free memory 수치만 보고 GPU 사용 여부를 잘못 판단
+2. 로드 시점 또는 첫 generate 시점에 allocator 오류 재발
+3. GPU 실패가 곧 서버 다운으로 이어짐
+4. 테스트 스크립트에서 `jq parse error`가 먼저 보여 실제 원인 파악이 어려워짐
+
+> 단순 성능 튜닝이 아니라, Jetson 환경에서 모델을 실제 서비스 가능한 상태로 만들기 위한 필수 제어 계층으로 반영함.
 
 ---
 
-## 사전 준비: cuDSS 호스트 설치
+## 사전 준비
 
-Jetson에서 Docker 컨테이너의 CUDA는 호스트 라이브러리에 의존하며 cuDSS가 호스트에 없으면 다음 에러가 발생함.
-> ImportError: libcudss.so.0: cannot open shared object file
+### cuDSS 호스트 설치
 
-**설치 명령 (Jetson 호스트에서 실행)**
+Jetson 호스트에 `cuDSS`가 없으면 컨테이너 내부에서 다음 오류가 발생할 수 있습니다.
+
+```text
+ImportError: libcudss.so.0: cannot open shared object file
+```
+
+호스트에서 설치합니다.
 
 ```bash
 wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb
@@ -43,221 +216,187 @@ sudo apt-get update
 sudo apt-get -y install cudss
 ```
 
-**설치 확인**
+확인:
 
 ```bash
 find /usr -name 'libcudss.so*' 2>/dev/null
 ```
 
----
-
 ## 설정
 
-### .env 파일 (`jetson_slm_stack/.env`)
+주 설정 파일은 `jetson_slm_stack/.env`입니다.
 
-주요 파라미터:
+### 핵심 변수
 
-| 파라미터 | 기본값 | 설명 |
-|----------|--------|------|
-| `DEVICE` | `cuda` | 추론 디바이스. `cuda` 또는 `cpu` |
-| `DTYPE` | `float16` | 모델 정밀도. Jetson에서는 `float16` 권장 |
-| `LOAD_IN_4BIT` | `0` | **반드시 0** — Jetson sm_87에서 bitsandbytes 미지원 |
-| `MAX_INPUT_TOKENS` | `1024` | 입력 최대 토큰 수 |
-| `MAX_NEW_TOKENS` | `512` | 생성 최대 토큰 수 |
-| `TEMPERATURE` | `0.2` | 생성 다양성. 낮을수록 사실 위주 응답 |
-| `TOP_P` | `0.9` | Nucleus Sampling 누적 확률 |
-| `TOP_K` | `40` | 후보 토큰 수 상한 |
-| `REPETITION_PENALTY` | `1.05` | 반복 억제 (1.0 = 억제 없음) |
-| `ENABLE_WARMUP` | `1` | 서버 시작 시 GPU 예열 추론 실행 |
-| `EMPTY_CACHE_ON_OOM` | `1` | OOM 발생 시 CUDA 캐시 자동 정리 후 재시도 |
+| 변수 | 현재 의미 |
+|------|-----------|
+| `DEVICE` | 요청 디바이스. 일반적으로 `cuda` |
+| `DTYPE` | 기본 저장 dtype. 현재 `float16` 기준 경로 사용 |
+| `LOAD_IN_4BIT` | Jetson에서는 보통 `0` 유지 |
+| `GPU_OFFLOAD_ENABLED` | 저메모리 GPU offload 사용 여부 |
+| `GPU_TARGET_MEMORY_MB` | 목표 GPU budget |
+| `GPU_MEMORY_RESERVE_MB` | 남겨둘 안전 여유 메모리 |
+| `GPU_OFFLOAD_BUFFERS` | offload 버퍼 유지 여부 |
+| `GPU_PROBE_STEP_MB` | budget 탐색 감소 단위 |
+| `GPU_PROBE_MIN_MB` | 이 값 아래로는 offload 시도하지 않음 |
+| `MAX_INPUT_TOKENS` | 최대 입력 토큰 |
+| `MAX_NEW_TOKENS` | 최대 생성 토큰 |
+| `TEMPERATURE` | 샘플링 강도 |
+| `CPU_THREADS` | CPU intra-op thread 수 |
+| `CPU_INTEROP_THREADS` | CPU inter-op thread 수 |
+| `CPU_FORCE_GREEDY` | CPU 폴백일 때 low-temp 생성에서 greedy 강제 여부 |
 
-> `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128,garbage_collection_threshold:0.8`  
-> Jetson Unified Memory 최적화용. `expandable_segments:True`는 Jetson nvmap 미지원으로 제거됨.
+### 현재 권장값 예시
 
-### HuggingFace Token
+현재 Llama 기준으로 안정적으로 동작한 값은 대체로 다음 범위입니다.
 
-```bash
-# jetson_slm_stack/.env
-HF_TOKEN=hf_***
+```env
+DEVICE=cuda
+DTYPE=float16
+LOAD_IN_4BIT=0
+GPU_OFFLOAD_ENABLED=1
+GPU_TARGET_MEMORY_MB=640
+GPU_MEMORY_RESERVE_MB=512
+GPU_OFFLOAD_BUFFERS=0
+GPU_PROBE_STEP_MB=64
+GPU_PROBE_MIN_MB=256
+MAX_INPUT_TOKENS=512
+MAX_NEW_TOKENS=32
+TEMPERATURE=0.0
+TOP_P=1.0
+TOP_K=0
 ```
 
----
+설정 변경 후에는 컨테이너 재시작 또는 재빌드가 필요합니다.
 
 ## 실행
 
-### 최초 실행 (모델 다운로드 포함)
+### 최초 실행
 
 ```bash
 ./run.sh
 ```
 
-내부 동작: 모델 다운로드 → 컨테이너 빌드 → SLM 서버 시작
+내부 동작:
 
-### 재시작 (서버 코드 수정 후)
+1. 모델 다운로드
+2. Docker 이미지 빌드
+3. 기본 서버 시작
+
+### 재시작
 
 ```bash
 ./rerun.sh
 ```
 
-메모리 정리 → 컨테이너 재시작. 서버는 `server.py`를 메모리에 올려두므로 코드 수정 시 반드시 재시작 필요.
-
 ### 특정 모델 실행
 
 ```bash
-./jetson_slm_stack/scripts/run_jetson.sh llama      # Llama-3.2-1B-Instruct
-./jetson_slm_stack/scripts/run_jetson.sh deepseek   # DeepSeek-R1-Distill-Qwen-1.5B
-./jetson_slm_stack/scripts/run_jetson.sh llama -d   # 백그라운드 실행
+./jetson_slm_stack/scripts/run_jetson.sh llama
+./jetson_slm_stack/scripts/run_jetson.sh deepseek
+./jetson_slm_stack/scripts/run_jetson.sh qwen
 ```
 
----
+### 모델별 단축 스크립트
+
+```bash
+./start_server.sh llama
+./start_server.sh qwen --rebuild
+./stop_server.sh llama
+./stop_server.sh all
+```
 
 ## API
 
-두 엔드포인트는 내부적으로 동일한 `generate_text()`를 공유하며, 앞단 처리 방식만 다름.
-
-### `/generate` — Raw 문자열 입력
+### `/healthz`
 
 ```bash
-curl -X POST http://localhost:8000/generate \
+curl -s http://localhost:8000/healthz | jq
+```
+
+확인해야 할 핵심 필드:
+
+1. `requested_device`: 사용자가 요청한 디바이스
+2. `active_device`: 실제 런타임 디바이스
+3. `model_device`: 모델의 실제 배치 디바이스
+4. `load_mode`: `cuda-offload-640mb`, `cpu-bfloat16` 같은 실제 로드 모드
+5. `cuda_memory_allocated`, `cuda_memory_reserved`: 실제 CUDA 사용량
+
+### `/generate`
+
+```bash
+curl -s -X POST http://localhost:8000/generate \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "What is edge AI?", "max_new_tokens": 100}'
+  -d '{"prompt":"What is edge AI?","max_new_tokens":32,"temperature":0.0,"top_p":1.0}' | jq
 ```
 
-- `prompt` 문자열을 그대로 모델에 전달
-- system prompt 없음, chat template 미적용
-- 문장 이어쓰기 방식으로 응답
-
-### `/v1/chat/completions` — 대화형 입력
+### `/v1/chat/completions`
 
 ```bash
-curl -X POST http://localhost:8000/v1/chat/completions \
+curl -s -X POST http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "What is edge AI?"}]}'
+  -d '{"messages":[{"role":"user","content":"What is edge AI?"}],"max_new_tokens":32,"temperature":0.0,"top_p":1.0}' | jq
 ```
-
-- `messages` 배열을 `build_prompt()`로 변환
-- system prompt 자동 삽입 + `tokenizer.apply_chat_template()` 적용
-- instruction-tuned 모델에 최적화된 완성도 높은 응답
-
-> **System Prompt 제한 주의:**  
-> `SYSTEM_PROMPT`로 도메인을 제한해도 1B 모델은 RLHF 특성상 거절 지시를 일관되게 따르지 않습니다.  
-> 도메인 제한이 필요한 경우 7B 이상 모델이 필요하며, 현 플랫폼에서는 지원 불가입니다.
-
-### 헬스체크
-
-```bash
-curl http://localhost:8000/healthz
-```
-
----
 
 ## 테스트
 
-### 빠른 서버 상태 + 성능 리포트
+`test_slm.sh`는 다음을 한 번에 수행합니다.
+
+1. 서버가 없으면 대상 서비스만 재시작
+2. `/healthz` 확인
+3. `/v1/models` 확인
+4. `/generate` 호출
+5. `/v1/chat/completions` 호출
+6. 성능 리포트 출력
+
+### 예시
 
 ```bash
 ./test_slm.sh llama
 ./test_slm.sh deepseek
+./test_slm.sh qwen
+printf '%s\n' 'Did King Sejong create Hangul while using a MacBook?' | ./test_slm.sh llama --rebuild
 ```
 
----
+### 스크립트 변경점
+
+현재 `test_slm.sh`는 아래를 지원합니다.
+
+1. 파이프 입력과 대화형 입력 둘 다 지원
+2. HTTP 상태 코드와 본문을 분리 수집
+3. 비JSON 응답도 그대로 출력
+4. JSON 응답일 때만 `jq`로 파싱
+
+즉 스크립트 자체의 `jq parse error`와 서버의 실제 500 오류를 구분할 수 있습니다.
 
 ## 트러블슈팅
 
-| 증상 | 원인 | 해결 |
+| 증상 | 원인 | 대응 |
 |------|------|------|
-| `libcudss.so.0 not found` | 호스트에 cuDSS 미설치 | 사전 준비 섹션 참고 |
-| `torch.cuda.is_available() = False` | docker runtime 설정 누락 | `docker-compose.yml`에 `runtime: nvidia` 확인 |
-| 컨테이너 OOM (exit 137) | Unified Memory 부족 | `./rerun.sh`로 재시작, 필요시 Jetson 리부트 |
-| `NvMapMemAllocInternalTagged error 12` | `expandable_segments:True` 설정 | `.env`에서 해당 설정 제거 |
-| 4-bit 양자화 에러 | Jetson sm_87 bitsandbytes 미지원 | `LOAD_IN_4BIT=0` 유지 |
-| 서버 코드 수정 후 반영 안 됨 | uvicorn `--reload` 없음 | `./rerun.sh`로 컨테이너 재시작 |
+| `libcudss.so.0 not found` | 호스트 cuDSS 미설치 | 호스트에 `cudss` 설치 |
+| `torch.cuda.is_available() = False` | NVIDIA runtime 설정 누락 | Compose의 `runtime: nvidia`와 환경 변수 확인 |
+| `NvMapMemAllocInternalTagged error 12` | Jetson allocator가 큰 contiguous 할당 실패 | GPU budget 축소, offload 사용, reserve 확대 |
+| `INTERNAL ASSERT FAILED ... CUDACachingAllocator.cpp` | free memory 수치와 실제 할당 가능 메모리 불일치 | 네이티브 probe 결과 기준으로 `GPU_TARGET_MEMORY_MB` 조정 |
+| 응답은 오는데 `active_device=cpu` | CUDA 로드 실패 후 폴백 | `load_mode`, 로그, `GPU_*` 변수 확인 |
+| `parse error: Invalid numeric literal` | 스크립트가 비JSON 응답을 `jq`에 바로 전달 | 최신 `test_slm.sh` 사용 |
+| 4-bit 양자화 실패 | Jetson Orin iGPU에서 bitsandbytes 제약 | `LOAD_IN_4BIT=0` 유지 |
 
----
-
-## 확장 (DGX 대응)
+## DGX 대응
 
 ```bash
 ./jetson_slm_stack/scripts/package_for_dgx.sh
 ```
 
-`jetson_slm_stack/release/marine-dx-slm-stack-dgx-portable.tar.gz` 생성. `models/` 디렉토리는 용량 문제로 **미포함**이며, DGX에서 아래 순서로 모델을 다운로드함.
+생성물은 `jetson_slm_stack/release` 아래에 패키징됩니다. `models/`는 포함하지 않으므로 DGX 환경에서 별도 다운로드가 필요합니다.
 
-1. `.env.dgx.example`을 `.env`로 복사 후 `HF_TOKEN` 설정
-2. 컨테이너 내부에서 `download_models.py` 실행 (`HF_TOKEN` 환경변수 → `snapshot_download()` 호출)
-3. `server.py`가 `./models/<model_id>/` 로컬 경로를 우선 탐색 → HuggingFace 없이 추론 가능
+## 요약
 
-> `HF_TOKEN` 미설정 시 `snapshot_download()` 인증 실패. Llama 모델은 Meta 라이선스 동의 후 발급된 토큰 필요.
+이 저장소의 현재 핵심은 다음입니다.
 
----
-
-## 구조 요약
-
-| 항목 | 값 |
-|------|----|
-| 추론 서버 | FastAPI + uvicorn (`app/server.py`) |
-| 모델 로드 방식 | CPU 로드 → CUDA 이동 (2단계, OOM 안정화) |
-| 메모리 관리 | 추론 전후 `gc.collect()` + `torch.cuda.empty_cache()` |
-| 설정 관리 | `jetson_slm_stack/.env` 단일 파일 |
-| 확장성 | DGX / 클라우드 이식 가능 |
-
-
-## 11. 메모리 최적화 (Jetson Orin Nano 대응)
-
-### 문제: CUDA Out of Memory 에러
-
-`Jetson Orin Nano` 같은 저사양 GPU 환경에서 다음과 같은 오류가 발생하였고, 하기와 같은 코드로 해결하였음.
-
-```
-RuntimeError: CUDA error: out of memory
-NvMapMemHandleAlloc: error 0
-```
-
-### 해결 방법
-
-**`app/server.py`에 다음 최적화가 구현함**
-
-#### 1. 모델 로드 최적화 — `load_model()`
-```python
-# RAM 부족 시 시작 거부
-if _avail_mb < 2500: raise RuntimeError("Not enough RAM")
-# CPU 로드 후 CUDA 이동 (2단계)
-model_obj = AutoModelForCausalLM.from_pretrained(..., torch_dtype=runtime_dtype)
-model_obj = model_obj.to("cuda")  # 실패 시 except → CPU 폴백
-```
-
-#### 2. 생성 최적화 — `generate_once()` + `generate_text()`
-```python
-# 1차 OOM: max_new_tokens 1/4 축소 후 재시도
-reduced_tokens = max(16, min(max_new_tokens // 4, 64))
-# 2차 OOM: 프롬프트도 1/4 truncation 후 재시도
-truncated_tokens = max(64, MAX_INPUT_TOKENS // 4)
-```
-
-#### 3. 메모리 정리 — `cleanup_memory()`
-```python
-gc.collect()
-torch.cuda.empty_cache()
-torch.cuda.synchronize()
-# 로드 전후, 추론 전후 호출
-```
-
-#### 4. Warmup — `lifespan()` startup
-```python
-generate_once(prompt="Hello", max_new_tokens=4, ...)
-# except: 실패해도 서버 계속 시작
-```
-
-### 토큰 설정 가이드 (`.env`)
-
-| 상황 | `MAX_INPUT_TOKENS` | `MAX_NEW_TOKENS` |
-|------|--------------------|-----------------|
-| 빠른 테스트 / 짧은 질문 | `512` | `128` |
-| **일반 사용 (현재)** | **`1024`** | **`512`** |
-| 문서 요약 / 긴 컨텍스트 | `2048` | `512` |
-| OOM 발생 시 | `512` | `128` |
-
----
+1. Jetson에서 작은 모델을 안정적으로 추론하기 위한 하이브리드 GPU offload
+2. Python 추정이 아닌 네이티브 CUDA 메모리 프로브 기반 로드 전략
+3. 실패 시 CPU `bfloat16` 폴백으로 서버 생존성 유지
+4. `test_slm.sh`를 통한 일관된 재현과 성능 리포트
 ## CLI 빠른 참조
 
 ### 빌드
@@ -304,34 +443,3 @@ echo 'What is edge AI?' | ./test_slm.sh llama
 
 
 ## 벤치마크 결과 (`meta-llama/Llama-3.2-1B-Instruct`)
-
-**테스트 질문:** `"Did King Sejong create Hangul while using a MacBook?"`  
-*(의도적으로 틀린 전제 포함 — 팩트 교정 지능 검증)*
-
-### .env 설정 (테스트 시점)
-
-| 파라미터 | 값 | 용도 |
-|----------|----|------|
-| `DEVICE` | `cuda` | 추론 디바이스. CPU 대비 ~5배 이상 빠름 |
-| `DTYPE` | `float16` | 모델 정밀도. float32 대비 메모리 절반, 속도 향상 |
-| `LOAD_IN_4BIT` | `0` | 4-bit 양자화. Jetson sm_87 미지원으로 반드시 0 |
-| `MAX_INPUT_TOKENS` | `1024` | 입력 프롬프트 최대 토큰 수. 초과 시 자동 truncation |
-| `MAX_NEW_TOKENS` | `512` | 생성할 응답 최대 토큰 수. 길수록 상세하지만 지연 증가 |
-| `TEMPERATURE` | `0.2` | 응답 다양성. 낮을수록 사실 위주, 높을수록 창의적 |
-| `TOP_P` | `0.9` | 누적 확률 상위 90% 토큰 중 선택 (Nucleus Sampling) |
-| `TOP_K` | `40` | 후보 토큰 수 상한. TOP_P와 병행 적용 |
-| `REPETITION_PENALTY` | `1.05` | 동일 단어 반복 억제. 1.0 = 억제 없음 |
-
-### API별 결과
-
-| 항목 | `/generate` | `/v1/chat/completions` |
-|------|-------------|------------------------|
-| Prompt 토큰 | 13 | 62 (+49, system prompt + chat template) |
-| Completion 토큰 | 258 | 233 |
-| 응답 시간 | 15.542 sec | 15.027 sec |
-| **처리 속도** | **16.6 tok/s** | **16.553 tok/s** |
-| GPU Memory | 2,374 MB / 7,620 MB (31.2%) | 2,374 MB / 7,620 MB (31.2%) |
-| 팩트 오류 교정 | ✅ | ✅ |
-| 응답 완성도 | 중 (문장 이어쓰기) | 높음 (instruction 최적화) |
-
-> 상세 결과: [`[GPU]max_input_tokens 1024, max_new_tokens_default 512 King Sejong English Question Test.md`]([GPU]max_input_tokens%201024%2C%20max_new_tokens_default%20512%20King%20Sejong%20English%20Question%20Test.md)

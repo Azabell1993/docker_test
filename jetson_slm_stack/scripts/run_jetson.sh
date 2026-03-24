@@ -27,6 +27,11 @@ case "$CMD" in
     docker compose --profile deepseek up --build -d deepseek-server
     ;;
 
+  qwen)
+    echo "[STEP] Start Qwen Server"
+    docker compose --profile qwen up --build -d qwen-server
+    ;;
+
   clean)
     echo "[STEP] Clean Docker"
     docker compose down
@@ -34,7 +39,7 @@ case "$CMD" in
     ;;
 
   *)
-    echo "Usage: $0 {prep|download|llama|deepseek|clean}"
+    echo "Usage: $0 {prep|download|llama|deepseek|qwen|clean}"
     exit 1
     ;;
 esac

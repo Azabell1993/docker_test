@@ -105,3 +105,44 @@ services:
       - "8001:8001"
     command: python3 app/server.py --port 8001
     profiles: ["deepseek"]
+
+  qwen-server:
+    ipc: host
+    shm_size: "8gb"
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.jetson
+      args:
+        BASE_IMAGE: ${BASE_IMAGE}
+    runtime: nvidia
+    environment:
+      DEVICE: ${DEVICE:-cuda}
+      DTYPE: ${DTYPE:-float16}
+      LOAD_IN_4BIT: ${LOAD_IN_4BIT:-0}
+      MAX_INPUT_TOKENS: ${MAX_INPUT_TOKENS:-512}
+      MAX_NEW_TOKENS: ${MAX_NEW_TOKENS:-128}
+      TEMPERATURE: ${TEMPERATURE:-0.2}
+      TOP_P: ${TOP_P:-0.9}
+      TOP_K: ${TOP_K:-40}
+      REPETITION_PENALTY: ${REPETITION_PENALTY:-1.05}
+      ENABLE_WARMUP: ${ENABLE_WARMUP:-1}
+      EMPTY_CACHE_ON_OOM: ${EMPTY_CACHE_ON_OOM:-1}
+      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      MODEL_ID: ${QWEN_MODEL_ID}
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:64,garbage_collection_threshold:0.8,expandable_segments:True}
+      LD_LIBRARY_PATH: "/usr/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu/libcudss/12:${LD_LIBRARY_PATH}"
+    env_file:
+      - .env
+    volumes:
+      - ./:/workspace
+      - /usr/lib/aarch64-linux-gnu/libcudss.so.0:/usr/lib/aarch64-linux-gnu/libcudss.so.0:ro
+      - /usr/lib/aarch64-linux-gnu/libcudss:/usr/lib/aarch64-linux-gnu/libcudss:ro
+    working_dir: /workspace
+    ports:
+      - "8002:8002"
+    command: python3 app/server.py --port 8002
+    profiles: ["qwen"]

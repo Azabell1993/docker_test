@@ -21,8 +21,8 @@ set -uo pipefail
 
 # ── 인수 파싱 ─────────────────────────────────────────────────────────────────
 MODEL_TYPE="${1:-}"
-if [[ "$MODEL_TYPE" != "llama" && "$MODEL_TYPE" != "deepseek" ]]; then
-    echo "Usage: ./test_dataset.sh [llama|deepseek] [--max N] [--api generate|chat] [--split train|val|test]"
+if [[ "$MODEL_TYPE" != "llama" && "$MODEL_TYPE" != "deepseek" && "$MODEL_TYPE" != "qwen" ]]; then
+    echo "Usage: ./test_dataset.sh [llama|deepseek|qwen] [--max N] [--api generate|chat] [--split train|val|test]"
     exit 1
 fi
 shift
@@ -67,8 +67,10 @@ mkdir -p "$OUTPUT_DIR"
 # ── 포트 설정 ─────────────────────────────────────────────────────────────────
 if [[ "$MODEL_TYPE" == "llama" ]]; then
     PORT=8000
-else
+elif [[ "$MODEL_TYPE" == "deepseek" ]]; then
     PORT=8001
+else
+    PORT=8002
 fi
 
 # ── .env에서 파라미터 읽기 ─────────────────────────────────────────────────────

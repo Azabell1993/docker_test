@@ -5,8 +5,8 @@
 MODEL_TYPE=$1
 REBUILD=${2:-""}
 
-if [ "$MODEL_TYPE" != "llama" ] && [ "$MODEL_TYPE" != "deepseek" ]; then
-    echo "Usage: ./test_slm.sh [llama|deepseek] [--rebuild]"
+if [ "$MODEL_TYPE" != "llama" ] && [ "$MODEL_TYPE" != "deepseek" ] && [ "$MODEL_TYPE" != "qwen" ]; then
+    echo "Usage: ./test_slm.sh [llama|deepseek|qwen] [--rebuild]"
     exit 1
 fi
 
@@ -15,15 +15,27 @@ if [ "$MODEL_TYPE" == "llama" ]; then
     PORT=8000
     DEFAULT_PROMPT="What is the capital of France?"
     SERVICE_NAME="llama32-server"
-else
+elif [ "$MODEL_TYPE" == "deepseek" ]; then
     PORT=8001
     DEFAULT_PROMPT="Explain underwater acoustic communication simply."
     SERVICE_NAME="deepseek-server"
+else
+    PORT=8002
+    DEFAULT_PROMPT="Explain underwater acoustic communication simply."
+    SERVICE_NAME="qwen-server"
 fi
 
-# 프롬프트 직접 입력 (엔터만 누르면 기본값 사용)
+# 프롬프트 입력 — 파이프(stdin) 또는 인터랙티브 모두 지원
+#   echo 'Hello' | ./test_slm.sh qwen   → 파이프에서 읽음
+#   ./test_slm.sh qwen                  → 터미널에서 직접 입력
 echo ""
-read -r -p "Enter prompt [default: $DEFAULT_PROMPT]: " USER_PROMPT
+if [ ! -t 0 ]; then
+    # stdin이 파이프/리다이렉트인 경우
+    read -r USER_PROMPT
+else
+    # 터미널에서 직접 실행한 경우
+    read -r -p "Enter prompt [default: $DEFAULT_PROMPT]: " USER_PROMPT
+fi
 PROMPT="${USER_PROMPT:-$DEFAULT_PROMPT}"
 echo "  Using prompt: \"$PROMPT\""
 echo ""
@@ -39,6 +51,47 @@ TEST_TEMPERATURE=$(grep -E '^TEMPERATURE=' "$ENV_FILE" 2>/dev/null | tail -1 | c
 TEST_TEMPERATURE=${TEST_TEMPERATURE:-0.2}
 TEST_TOP_P=$(grep -E '^TOP_P=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2)
 TEST_TOP_P=${TEST_TOP_P:-0.9}
+
+is_json() {
+    local input="$1"
+    jq -e . >/dev/null 2>&1 <<< "$input"
+}
+
+print_json_or_raw() {
+    local body="$1"
+    if is_json "$body"; then
+        echo "$body" | jq
+    else
+        printf '%s\n' "$body"
+    fi
+}
+
+json_read() {
+    local body="$1"
+    local filter="$2"
+    local fallback="$3"
+    if is_json "$body"; then
+        echo "$body" | jq -r --arg fallback "$fallback" "$filter // \$fallback"
+    else
+        echo "$fallback"
+    fi
+}
+
+request_json() {
+    local method="$1"
+    local url="$2"
+    local payload="${3:-}"
+    local response
+
+    if [ -n "$payload" ]; then
+        response=$(curl -sS -X "$method" "$url" -H "Content-Type: application/json" -d "$payload" -w $'\n%{http_code}')
+    else
+        response=$(curl -sS -X "$method" "$url" -w $'\n%{http_code}')
+    fi
+
+    HTTP_STATUS="${response##*$'\n'}"
+    HTTP_BODY="${response%$'\n'*}"
+}
 
 echo "  [Config] max_new_tokens=$TEST_MAX_NEW_TOKENS  temperature=$TEST_TEMPERATURE  top_p=$TEST_TOP_P"
 echo ""
@@ -72,12 +125,17 @@ else
 fi
 
 echo "--- [TEST] Health Check ---"
-HEALTH=$(curl -s http://localhost:$PORT/healthz)
-echo "$HEALTH" | jq
+request_json GET "http://localhost:$PORT/healthz"
+HEALTH_STATUS="$HTTP_STATUS"
+HEALTH="$HTTP_BODY"
+print_json_or_raw "$HEALTH"
 echo -e "\n"
 
 echo "--- [TEST] Models List ---"
-curl -s http://localhost:$PORT/v1/models | jq
+request_json GET "http://localhost:$PORT/v1/models"
+MODELS_STATUS="$HTTP_STATUS"
+MODELS_BODY="$HTTP_BODY"
+print_json_or_raw "$MODELS_BODY"
 echo -e "\n"
 
 echo "--- [TEST] Generation API ---"
@@ -88,10 +146,13 @@ GEN_PAYLOAD=$(jq -n \
   --argjson temperature    $TEST_TEMPERATURE \
   --argjson top_p          $TEST_TOP_P \
   '{prompt: $prompt, max_new_tokens: $max_new_tokens, temperature: $temperature, top_p: $top_p}')
-GEN_RESP=$(curl -s -X POST http://localhost:$PORT/generate \
-  -H "Content-Type: application/json" \
-  -d "$GEN_PAYLOAD")
-echo "$GEN_RESP" | jq
+request_json POST "http://localhost:$PORT/generate" "$GEN_PAYLOAD"
+GEN_STATUS="$HTTP_STATUS"
+GEN_RESP="$HTTP_BODY"
+if [ "$GEN_STATUS" != "200" ]; then
+        echo "  [HTTP $GEN_STATUS]"
+fi
+print_json_or_raw "$GEN_RESP"
 echo -e "\n"
 
 echo "--- [TEST] Chat Completions API ---"
@@ -102,10 +163,13 @@ CHAT_PAYLOAD=$(jq -n \
   --argjson temperature    $TEST_TEMPERATURE \
   --argjson top_p          $TEST_TOP_P \
   '{messages: [{role: "user", content: $content}], max_new_tokens: $max_new_tokens, temperature: $temperature, top_p: $top_p}')
-CHAT_RESP=$(curl -s -X POST http://localhost:$PORT/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d "$CHAT_PAYLOAD")
-echo "$CHAT_RESP" | jq
+request_json POST "http://localhost:$PORT/v1/chat/completions" "$CHAT_PAYLOAD"
+CHAT_STATUS="$HTTP_STATUS"
+CHAT_RESP="$HTTP_BODY"
+if [ "$CHAT_STATUS" != "200" ]; then
+        echo "  [HTTP $CHAT_STATUS]"
+fi
+print_json_or_raw "$CHAT_RESP"
 echo -e "\n"
 
 # ──────────────────────────────────────────────
@@ -116,32 +180,32 @@ echo "             PERFORMANCE REPORT                 "
 echo "════════════════════════════════════════════════"
 
 # healthz 필드
-MODEL_ID_VAL=$(echo "$HEALTH"   | jq -r '.model_id          // "N/A"')
-MODEL_SRC=$(echo "$HEALTH"      | jq -r '.model_source       // "N/A"')
-CUDA_ACTIVE=$(echo "$HEALTH"    | jq -r '.active_device      // "N/A"')
-CUDA_AVAIL=$(echo "$HEALTH"     | jq -r '.cuda_available     // "N/A"')
-DTYPE=$(echo "$HEALTH"          | jq -r '.dtype              // "N/A"')
-MAX_IN=$(echo "$HEALTH"         | jq -r '.max_input_tokens        // "N/A"')
-MAX_NEW_DEF=$(echo "$HEALTH"    | jq -r '.max_new_tokens_default   // "N/A"')
-MEM_ALLOC=$(echo "$HEALTH"      | jq -r '.cuda_memory_allocated   // 0')
-MEM_RESV=$(echo "$HEALTH"       | jq -r '.cuda_memory_reserved    // 0')
+MODEL_ID_VAL=$(json_read "$HEALTH" '.model_id' 'N/A')
+MODEL_SRC=$(json_read "$HEALTH" '.model_source' 'N/A')
+CUDA_ACTIVE=$(json_read "$HEALTH" '.active_device' 'N/A')
+CUDA_AVAIL=$(json_read "$HEALTH" '.cuda_available' 'N/A')
+DTYPE=$(json_read "$HEALTH" '.dtype' 'N/A')
+MAX_IN=$(json_read "$HEALTH" '.max_input_tokens' '0')
+MAX_NEW_DEF=$(json_read "$HEALTH" '.max_new_tokens_default' '0')
+MEM_ALLOC=$(json_read "$HEALTH" '.cuda_memory_allocated' '0')
+MEM_RESV=$(json_read "$HEALTH" '.cuda_memory_reserved' '0')
 
 # Generation API 필드
-GEN_PROMPT_TOK=$(echo "$GEN_RESP"  | jq -r '.prompt_tokens     // "N/A"')
-GEN_COMP_TOK=$(echo "$GEN_RESP"    | jq -r '.completion_tokens // "N/A"')
-GEN_TOTAL_TOK=$(echo "$GEN_RESP"   | jq -r '.total_tokens      // "N/A"')
-GEN_LATENCY=$(echo "$GEN_RESP"     | jq -r '.latency_sec       // "N/A"')
-GEN_TPS=$(echo "$GEN_RESP"         | jq -r '.tokens_per_sec    // "N/A"')
+GEN_PROMPT_TOK=$(json_read "$GEN_RESP" '.prompt_tokens' 'N/A')
+GEN_COMP_TOK=$(json_read "$GEN_RESP" '.completion_tokens' 'N/A')
+GEN_TOTAL_TOK=$(json_read "$GEN_RESP" '.total_tokens' 'N/A')
+GEN_LATENCY=$(json_read "$GEN_RESP" '.latency_sec' 'N/A')
+GEN_TPS=$(json_read "$GEN_RESP" '.tokens_per_sec' 'N/A')
 
 # Chat Completions API 필드
-CHAT_PROMPT_TOK=$(echo "$CHAT_RESP" | jq -r '.usage.prompt_tokens     // "N/A"')
-CHAT_COMP_TOK=$(echo "$CHAT_RESP"   | jq -r '.usage.completion_tokens // "N/A"')
-CHAT_TOTAL_TOK=$(echo "$CHAT_RESP"  | jq -r '.usage.total_tokens      // "N/A"')
-CHAT_LATENCY=$(echo "$CHAT_RESP"    | jq -r '.latency_sec             // "N/A"')
-CHAT_TPS=$(echo "$CHAT_RESP"        | jq -r '.tokens_per_sec          // "N/A"')
+CHAT_PROMPT_TOK=$(json_read "$CHAT_RESP" '.usage.prompt_tokens' 'N/A')
+CHAT_COMP_TOK=$(json_read "$CHAT_RESP" '.usage.completion_tokens' 'N/A')
+CHAT_TOTAL_TOK=$(json_read "$CHAT_RESP" '.usage.total_tokens' 'N/A')
+CHAT_LATENCY=$(json_read "$CHAT_RESP" '.latency_sec' 'N/A')
+CHAT_TPS=$(json_read "$CHAT_RESP" '.tokens_per_sec' 'N/A')
 
 # 메모리 MB 변환
-MEM_TOTAL=$(echo "$HEALTH" | jq -r '.cuda_memory_total // 0')
+MEM_TOTAL=$(json_read "$HEALTH" '.cuda_memory_total' '0')
 
 MEM_ALLOC_MB=$(echo "$MEM_ALLOC" | awk '{printf "%.1f", $1/1024/1024}')
 MEM_RESV_MB=$(echo  "$MEM_RESV"  | awk '{printf "%.1f", $1/1024/1024}')
