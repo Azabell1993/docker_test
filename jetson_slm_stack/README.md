@@ -2,12 +2,15 @@
 
 Jetson Orin Nano 엣지 디바이스에서 Docker Compose 기반으로 SLM(Small Language Model) 추론 서버를 구동하는 스택입니다.
 
-## 지원 모델
+대상 데이터셋:
 
-| 모델 | 포트 | 특징 |
-|------|------|------|
-| `meta-llama/Llama-3.2-1B-Instruct` | 8000 | 일반 지식 / 코드 생성 |
-| `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` | 8001 | 수중 통신 / 수학 추론 특화 |
+- 이름: `6G Network Slicing QoS` (`네트워크 슬라이싱`)
+- 형식: `CSV`
+- 주요 정형 컬럼 후보: `throughput`, `latency`, `packet_loss_rate`
+- 용도: `QoS prediction`, `slice optimization`
+- LLM 활용 예시: `지연에 민감한 슬라이스 분석`, `QoS 이상 탐지 질의`
+- 출처: `https://www.kaggle.com/datasets/ziya07/wireless-network-slicing-dataset`
+
 
 ## 검증된 실행 환경
 
@@ -33,8 +36,9 @@ jetson_slm_stack/
 │   ├── server.py         ← FastAPI 추론 서버
 │   └── download_models.py
 ├── dataset/
-│   ├── generated/        ← 생성된 데이터셋 (train/val/test.jsonl)
-│   └── scripts/generate_marine_dx_dataset.py
+│   ├── raw/network_slicing_qos/
+│   ├── prepared/network_slicing_qos/
+│   └── scripts/prepare_network_slicing_dataset.py
 ├── docker/
 │   ├── Dockerfile.jetson
 │   └── Dockerfile.dgx
@@ -221,17 +225,18 @@ docker compose -f jetson_slm_stack/docker-compose.yml rm -sf llama32-server
 
 ## 데이터셋
 
-`marine DX Physical AI + Network` 도메인 특화 합성 데이터:
+데이터셋은 `6G Network Slicing QoS` 으로 준비함
 
 ```
-dataset/generated/
-├── train.jsonl    ← 학습용
-├── val.jsonl      ← 검증용
-├── test.jsonl     ← 테스트용
-└── manifest.json  ← 메타데이터
+dataset/raw/network_slicing_qos/
+├── README.md
+└── *.csv
+
+dataset/prepared/network_slicing_qos/
+└── manifest.prep.json
 ```
 
-생성 스크립트: `dataset/scripts/generate_marine_dx_dataset.py`
+데이터셋 스크립트: `dataset/scripts/prepare_network_slicing_dataset.py`
 
 ## DGX Spark 마이그레이션
 
@@ -264,7 +269,7 @@ cp .env.example .env
 - `docker/Dockerfile.dgx` : x86 CUDA / DGX-target image
 - `app/server.py` : FastAPI inference service
 - `app/download_models.py` : Hugging Face model downloader
-- `dataset/scripts/generate_marine_dx_dataset.py` : synthetic dataset generator
+- `dataset/scripts/prepare_network_slicing_dataset.py` : 6G Network Slicing QoS prep scaffold
 - `scripts/run_jetson.sh` : convenience launcher
 - `scripts/package_for_dgx.sh` : DGX repackaging helper
 

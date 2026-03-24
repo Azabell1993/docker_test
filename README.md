@@ -38,6 +38,19 @@
 | GPU 사용 방식 | 전체 GPU 적재 대신 저메모리 `cuda-offload-*` 하이브리드 모드 우선 |
 | CPU 폴백 | CUDA 배치 실패 시 `cpu-bfloat16` 폴백 |
 | 네이티브 확장 | `safe_ops` (`.cpp` + `.cu`) 빌드 후 서버에서 사용 |
+| 데이터셋 준비 | `6G Network Slicing QoS` prep scaffold만 유지 |
+
+### 데이터셋 준비 상태
+
+| 항목 | 내용 |
+|------|------|
+| 대상 데이터셋 | `6G Network Slicing QoS (네트워크 슬라이싱)` |
+| 출처 | `https://www.kaggle.com/datasets/ziya07/wireless-network-slicing-dataset` |
+| 원본 형식 | `CSV` |
+| 핵심 특징 | `throughput`, `latency`, `packet_loss_rate` |
+| 목표 용도 | `QoS prediction`, `slice optimization` |
+| LLM 활용 | `지연에 민감한 슬라이스 분석`, `QoS 이상 탐지 질의` |
+| 현재 반영 범위 | raw/prepared 디렉터리와 prep manifest만 추가 |
 
 ## 플랫폼 특성
 

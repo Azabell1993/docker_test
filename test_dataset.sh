@@ -52,7 +52,8 @@ fi
 # ── 경로 설정 ─────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPOSE_DIR="$SCRIPT_DIR/jetson_slm_stack"
-DATA_FILE="$COMPOSE_DIR/dataset/generated/${SPLIT}.jsonl"
+DATA_FILE="$COMPOSE_DIR/dataset/prepared/network_slicing_qos/${SPLIT}.jsonl"
+PREP_MANIFEST="$COMPOSE_DIR/dataset/prepared/network_slicing_qos/manifest.prep.json"
 OUTPUT_DIR="$SCRIPT_DIR/test_slm_output"
 ENV_FILE="$COMPOSE_DIR/.env"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -60,6 +61,12 @@ OUT_FILE="$OUTPUT_DIR/dataset_eval_${MODEL_TYPE}_${SPLIT}_${TIMESTAMP}.jsonl"
 
 if [[ ! -f "$DATA_FILE" ]]; then
     echo "[ERROR] Dataset file not found: $DATA_FILE"
+    if [[ -f "$PREP_MANIFEST" ]]; then
+        echo "[INFO] 현재 데이터셋은 prep-only 상태입니다."
+        echo "[INFO] Kaggle CSV를 dataset/raw/network_slicing_qos/ 아래에 배치한 뒤,"
+        echo "[INFO] CSV -> JSONL 변환 단계가 구현되어야 dataset 평가를 실행할 수 있습니다."
+        echo "[INFO] 준비 메타데이터: $PREP_MANIFEST"
+    fi
     exit 1
 fi
 mkdir -p "$OUTPUT_DIR"

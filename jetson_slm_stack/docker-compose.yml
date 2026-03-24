@@ -8,7 +8,7 @@ services:
     volumes:
       - ./:/workspace
     working_dir: /workspace
-    command: python3 dataset/scripts/generate_marine_dx_dataset.py
+    command: python3 dataset/scripts/prepare_network_slicing_dataset.py
 
   model-download:
     build:

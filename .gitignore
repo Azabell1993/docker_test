@@ -15,3 +15,17 @@ jetson_slm_stack.tar
 
 # Exclude all files in cache directories
 jetson_slm_stack/.cache/
+
+# Dataset download/cache artifacts
+jetson_slm_stack/dataset/raw/network_slicing_qos/*.zip
+jetson_slm_stack/dataset/raw/network_slicing_qos/*.part
+jetson_slm_stack/dataset/raw/network_slicing_qos/*.tmp
+jetson_slm_stack/dataset/raw/network_slicing_qos/.cache/
+jetson_slm_stack/dataset/raw/network_slicing_qos/__pycache__/
+jetson_slm_stack/dataset/raw/network_slicing_qos/.ipynb_checkpoints/
+jetson_slm_stack/dataset/prepared/network_slicing_qos/*.tmp
+jetson_slm_stack/dataset/prepared/network_slicing_qos/*.bak
+jetson_slm_stack/dataset/prepared/network_slicing_qos/__pycache__/
+jetson_slm_stack/dataset/prepared/network_slicing_qos/.ipynb_checkpoints/
+
+dataset/
