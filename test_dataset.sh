@@ -8,11 +8,15 @@
 #   --max  N              : 최대 N건만 평가 (기본: 전체)
 #   --api  generate|chat  : 사용할 API 엔드포인트 (기본: chat)
 #   --split train|val|test: 평가할 데이터 분할 (기본: test)
+#   --resume [FILE]       : 기존 결과 파일에 이어서 재개
+#   --log-file FILE       : 장시간 실행 로그 저장 경로 지정
 #
 # 예시:
 #   ./test_dataset.sh llama
 #   ./test_dataset.sh deepseek --max 10 --api generate
 #   ./test_dataset.sh llama --split val --max 20
+#   ./test_dataset.sh llama --split test --api chat --resume test_slm_output/dataset_eval_llama_test_20260324_193144.jsonl
+#   ./test_dataset.sh llama --split test --api chat --log-file test_slm_output/dataset_eval_llama_test.log
 #
 # 주의: 서버가 이미 실행 중이어야 합니다.
 #       먼저 ./test_slm.sh llama (또는 deepseek) 으로 기동하세요.
@@ -30,12 +34,24 @@ shift
 MAX_SAMPLES=0
 API_MODE="chat"
 SPLIT="test"
+RESUME_FILE=""
+LOG_FILE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --max)    MAX_SAMPLES="$2"; shift 2 ;;
         --api)    API_MODE="$2";    shift 2 ;;
         --split)  SPLIT="$2";       shift 2 ;;
+        --resume)
+            if [[ $# -gt 1 && "$2" != --* ]]; then
+                RESUME_FILE="$2"
+                shift 2
+            else
+                RESUME_FILE="__AUTO__"
+                shift 1
+            fi
+            ;;
+        --log-file) LOG_FILE="$2"; shift 2 ;;
         *)        echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -58,18 +74,44 @@ OUTPUT_DIR="$SCRIPT_DIR/test_slm_output"
 ENV_FILE="$COMPOSE_DIR/.env"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUT_FILE="$OUTPUT_DIR/dataset_eval_${MODEL_TYPE}_${SPLIT}_${TIMESTAMP}.jsonl"
+RUN_LOG_FILE=""
 
 if [[ ! -f "$DATA_FILE" ]]; then
     echo "[ERROR] Dataset file not found: $DATA_FILE"
     if [[ -f "$PREP_MANIFEST" ]]; then
-        echo "[INFO] 현재 데이터셋은 prep-only 상태입니다."
-        echo "[INFO] Kaggle CSV를 dataset/raw/network_slicing_qos/ 아래에 배치한 뒤,"
-        echo "[INFO] CSV -> JSONL 변환 단계가 구현되어야 dataset 평가를 실행할 수 있습니다."
+        echo "[INFO] dataset 준비 결과는 존재하지만 요청한 split 파일이 없습니다."
+        echo "[INFO] 먼저 dataset/scripts/prepare_network_slicing_dataset.py 를 다시 실행해 주세요."
         echo "[INFO] 준비 메타데이터: $PREP_MANIFEST"
     fi
     exit 1
 fi
 mkdir -p "$OUTPUT_DIR"
+
+if [[ -n "$RESUME_FILE" ]]; then
+    if [[ "$RESUME_FILE" == "__AUTO__" ]]; then
+        LATEST_MATCH=$(find "$OUTPUT_DIR" -maxdepth 1 -type f -name "dataset_eval_${MODEL_TYPE}_${SPLIT}_*.jsonl" | sort | tail -1)
+        if [[ -z "$LATEST_MATCH" ]]; then
+            echo "[ERROR] 재개할 기존 결과 파일을 찾지 못했습니다."
+            exit 1
+        fi
+        RESUME_FILE="$LATEST_MATCH"
+    fi
+
+    if [[ ! -f "$RESUME_FILE" ]]; then
+        echo "[ERROR] Resume file not found: $RESUME_FILE"
+        exit 1
+    fi
+    OUT_FILE="$RESUME_FILE"
+fi
+
+if [[ -z "$LOG_FILE" ]]; then
+    RUN_LOG_FILE="${OUT_FILE%.jsonl}.log"
+else
+    RUN_LOG_FILE="$LOG_FILE"
+fi
+
+touch "$RUN_LOG_FILE"
+exec > >(tee -a "$RUN_LOG_FILE") 2>&1
 
 # ── 포트 설정 ─────────────────────────────────────────────────────────────────
 if [[ "$MODEL_TYPE" == "llama" ]]; then
@@ -121,24 +163,49 @@ else
     N_SAMPLES=$TOTAL_LINES
 fi
 
+RESUME_SKIP=0
+if [[ -f "$OUT_FILE" ]]; then
+    RESUME_SKIP=$(wc -l < "$OUT_FILE")
+fi
+
+if [[ "$RESUME_SKIP" -gt "$N_SAMPLES" ]]; then
+    RESUME_SKIP="$N_SAMPLES"
+fi
+
 echo ""
 echo "  Model : $MODEL_ID_VAL"
 echo "  VRAM  : ${MEM_ALLOC_MB} MB / ${MEM_TOTAL_MB} MB"
 echo "  Data  : $DATA_FILE"
 echo "  Samples: $N_SAMPLES / $TOTAL_LINES"
 echo "  Output: $OUT_FILE"
+echo "  Log   : $RUN_LOG_FILE"
+if [[ "$RESUME_SKIP" -gt 0 ]]; then
+    echo "  Resume: enabled (${RESUME_SKIP} samples already written)"
+else
+    echo "  Resume: disabled"
+fi
 echo ""
 
+if [[ "$RESUME_SKIP" -ge "$N_SAMPLES" ]]; then
+    echo "[INFO] 요청한 샘플 수만큼 이미 처리되었습니다."
+    exit 0
+fi
+
 # ── 메인 평가 루프 ─────────────────────────────────────────────────────────────
-IDX=0
-SUCCESS=0
-FAIL=0
+IDX=$RESUME_SKIP
+SOURCE_IDX=0
+SESSION_SUCCESS=0
+SESSION_FAIL=0
 LATENCIES=""
 THROUGHPUTS=""
 PROMPT_TOKS=0
 COMP_TOKS=0
 
 while IFS= read -r line; do
+    SOURCE_IDX=$((SOURCE_IDX + 1))
+    if [[ "$SOURCE_IDX" -le "$RESUME_SKIP" ]]; then
+        continue
+    fi
     [[ $IDX -ge $N_SAMPLES ]] && break
 
     ID=$(          echo "$line" | jq -r '.id          // "unknown"')
@@ -197,7 +264,7 @@ Input: $INPUT"
 
     if [[ -z "$GENERATED" || "$GENERATED" == "null" ]]; then
         echo "FAIL"
-        FAIL=$((FAIL + 1))
+        SESSION_FAIL=$((SESSION_FAIL + 1))
         jq -nc \
             --arg id     "$ID" \
             --arg status "fail" \
@@ -206,7 +273,7 @@ Input: $INPUT"
         continue
     fi
 
-    SUCCESS=$((SUCCESS + 1))
+    SESSION_SUCCESS=$((SESSION_SUCCESS + 1))
     printf "%6.2fs  %6.1f tok/s  [%4s prompt / %4s completion tok]\n" \
         "$LATENCY" "$TPS" "$PROMPT_T" "$COMP_T"
 
@@ -255,7 +322,7 @@ MEM_ALLOC_F_MB=$(echo "$MEM_ALLOC_F"  | awk '{printf "%.1f", $1/1024/1024}')
 MEM_RESV_F_MB=$( echo "$MEM_RESV_F"   | awk '{printf "%.1f", $1/1024/1024}')
 
 # 통계 계산 (awk: float 안전)
-if [[ $SUCCESS -gt 0 && -n "${LATENCIES// /}" ]]; then
+if [[ $SESSION_SUCCESS -gt 0 && -n "${LATENCIES// /}" ]]; then
     read AVG_LAT MIN_LAT MAX_LAT < <(echo "$LATENCIES" | awk '{
         n=NF; sum=0; min=$1; max=$1
         for(i=1;i<=n;i++){
@@ -289,8 +356,10 @@ printf "  %-32s %s\n"    "Split:"                  "$SPLIT"
 printf "  %-32s %s\n"    "API Mode:"               "$API_MODE"
 printf "  %-32s %s\n"    "Temperature:"            "$TEST_TEMPERATURE"
 printf "  %-32s %s\n"    "Max New Tokens:"         "$TEST_MAX_NEW_TOKENS"
-printf "  %-32s %d / %d\n" "Samples (success/total):" $SUCCESS $N_SAMPLES
-printf "  %-32s %d\n"    "Failed:"                 $FAIL
+printf "  %-32s %d\n"    "Previously Completed:"   "$RESUME_SKIP"
+printf "  %-32s %d\n"    "Session Success:"        "$SESSION_SUCCESS"
+printf "  %-32s %d\n"    "Session Failed:"         "$SESSION_FAIL"
+printf "  %-32s %d / %d\n" "Total Written / Target:" "$(wc -l < "$OUT_FILE")" "$N_SAMPLES"
 echo ""
 echo "[ Latency (sec) ]"
 printf "  %-32s %.3f\n"  "Average:"  "$AVG_LAT"
@@ -314,5 +383,6 @@ printf "  %-32s %s MB / %s MB\n"  "Reserved:"   "$MEM_RESV_F_MB"  "$MEM_TOTAL_MB
 echo ""
 echo "[ Output ]"
 printf "  %-32s %s\n"    "JSONL saved:" "$OUT_FILE"
+printf "  %-32s %s\n"    "Run log saved:" "$RUN_LOG_FILE"
 echo ""
 echo "════════════════════════════════════════════════"

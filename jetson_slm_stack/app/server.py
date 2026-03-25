@@ -37,6 +37,8 @@ try:
     import safe_ops as _cpp
     _HAS_CPP = True
 except ImportError:
+    # 네이티브 확장이 없어도 서버는 동작해야 하므로,
+    # 스레드 설정과 CUDA 메모리 조회만 Python 기본 경로로 내려간다.
     _HAS_CPP = False
 
 
@@ -76,6 +78,8 @@ class AppConfig:
     """환경변수(.env)에서 모든 설정을 읽어 하나의 객체에 보관한다."""
 
     def __init__(self) -> None:
+        # 컨테이너/Compose 환경에서는 .env 값이 곧 런타임 정책이므로,
+        # 여기에서 모든 기본값과 오버라이드를 한 번에 확정해 둔다.
         # ── 기본 서비스 설정 ──
         self.app_title: str = os.getenv("APP_TITLE", "slm-inference-service")
         self.model_id: str = os.getenv("MODEL_ID", "meta-llama/Llama-3.2-1B-Instruct")
@@ -136,6 +140,7 @@ class AppConfig:
         local_path = os.path.join(
             self.model_cache_dir, self.model_id.replace("/", "__")
         )
+        # 다운로드된 로컬 모델이 있으면 네트워크 접근 없이 그 경로를 우선 사용한다.
         self.model_source: str = local_path if os.path.isdir(local_path) else self.model_id
 
     # ── 내부 헬퍼 ──
@@ -199,6 +204,8 @@ class MemoryManager:
             gc.collect()
         if self.runtime_device == "cuda" and torch.cuda.is_available():
             try:
+                # Jetson 계열은 작은 잔여 캐시에도 다음 로드/생성이 실패할 수 있어
+                # 일반적인 empty_cache + synchronize 조합을 기본 정리 루틴으로 둔다.
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
             except Exception:
@@ -224,6 +231,7 @@ class MemoryManager:
 def _configure_cpu_runtime(cfg: AppConfig) -> Dict[str, int]:
     """CPU 추론용 스레드 수를 설정한다. C++ 확장이 있으면 그 경로를 우선 사용."""
     if _HAS_CPP:
+        # safe_ops 경로는 GIL 해제와 예외 흡수를 포함하므로 컨테이너 부팅 시 더 안전하다.
         intra_threads, interop_threads = _cpp.configure_runtime(
             cfg.cpu_threads,
             cfg.cpu_interop_threads,
@@ -303,6 +311,8 @@ class ModelLoader:
     # ── 토크나이저 ──
 
     def build_tokenizer(self) -> Any:
+        # trust_remote_code=True 는 모델 저장소가 제공하는 tokenizer 커스텀 구현을 허용한다.
+        # 일부 instruct 모델은 기본 tokenizer 로는 chat template 동작이 어긋날 수 있다.
         tok = AutoTokenizer.from_pretrained(
             self.cfg.model_source, trust_remote_code=True, use_fast=True,
         )
@@ -315,6 +325,8 @@ class ModelLoader:
     # ── 4-bit 양자화 설정 ──
 
     def _build_quant_config(self) -> Optional["BitsAndBytesConfig"]:
+        # 4-bit 양자화는 CUDA + bitsandbytes + 명시적 활성화가 모두 충족될 때만 사용한다.
+        # 하나라도 빠지면 조용히 None 을 반환해 일반 로드 경로로 내려간다.
         if not (self.cfg.load_in_4bit and self.cfg.device == "cuda" and HAS_BNB_CONFIG):
             return None
         return BitsAndBytesConfig(
@@ -337,6 +349,8 @@ class ModelLoader:
         use_4bit = quant_config is not None
 
         if use_4bit:
+            # 가장 먼저 4-bit 를 시도하는 이유는 Jetson 계열에서
+            # 모델 적재 가능 여부를 가장 크게 좌우하는 축이 메모리이기 때문이다.
             model_obj, active_device, load_mode = self._load_4bit(quant_config)
             if model_obj is not None:
                 return self._finalize(model_obj, active_device, load_mode, True)
@@ -345,6 +359,8 @@ class ModelLoader:
             runtime_dtype = torch.float32
 
         if self.cfg.device == "cuda" and self.cfg.has_cuda:
+            # CUDA 요청 시에도 바로 .to("cuda") 하지 않고,
+            # 먼저 offload/하이브리드 경로를 시도해 작은 GPU 메모리에서도 살려 본다.
             offloaded = self._load_cuda_offload(runtime_dtype)
             if offloaded is not None:
                 model_obj, active_device, load_mode = offloaded
@@ -378,6 +394,8 @@ class ModelLoader:
         if not (self.cfg.gpu_offload_enabled and runtime_dtype == torch.float16):
             return None
 
+        # max_memory 기반 offload 는 "얼마나 free 인가"보다
+        # "실제로 얼마까지 안전하게 할당 가능한가"가 중요하므로 별도 프로브 결과를 사용한다.
         max_memory, budget_mb = self._build_cuda_offload_max_memory()
         if max_memory is not None:
             print(f"[INFO] CUDA 오프로딩 로드 시도 (gpu_budget={budget_mb}MiB)...")
@@ -401,6 +419,8 @@ class ModelLoader:
                     print(f"[INFO] CUDA 오프로딩 로드 성공 — budget={budget_mb}MiB")
                     return model_obj, "cuda", f"cuda-offload-{budget_mb}mb"
 
+                # from_pretrained 가 성공해도 모든 레이어가 CPU 에만 남을 수 있으므로
+                # 실제 device_map 결과를 확인한 뒤 실패로 간주한다.
                 print("[WARN] 오프로딩 로드가 GPU 레이어를 배치하지 못함")
                 del model_obj
                 self.mem.cleanup(force_gc=True)
@@ -426,6 +446,8 @@ class ModelLoader:
         if device_map is None:
             return None
 
+        # llama 계열은 동일한 레이어 구조를 가져 고정 split 이 비교적 안정적이므로,
+        # 마지막 레이어 구간만 GPU에 두는 보수적 전략을 별도 제공한다.
         split_dtype = torch.bfloat16 if self._is_llama_model() else runtime_dtype
 
         print(
@@ -467,6 +489,8 @@ class ModelLoader:
             single_load_needed = weight_mb + self.cfg.cpu_single_load_margin_mb
 
             if avail_mb < single_load_needed:
+                # CUDA 적재 전에도 먼저 CPU 메모리에 한 번 올라와야 하므로,
+                # 단일 적재조차 불가능한 경우는 초기에 중단하는 편이 낫다.
                 raise RuntimeError(
                     f"RAM 부족 ({avail_mb}MB < {single_load_needed}MB). "
                     f"현재 모델 단일 로드에도 메모리가 부족합니다."
@@ -493,6 +517,8 @@ class ModelLoader:
             print(f"[WARN] CUDA 이동 실패 ({e})")
             self.mem.cleanup_after_oom()
             # fp16 모델 해제 → bf16으로 재로드 (변환 피크메모리 없음)
+            # CPU bf16 은 메모리 사용량은 half 급이면서 exponent 범위가 넓어
+            # CPU float16 보다 overflow/NaN 위험이 훨씬 작다.
             del model_obj
             gc.collect()
             self.mem.cleanup()
@@ -564,6 +590,8 @@ class ModelLoader:
 
         try:
             if _HAS_CPP and hasattr(_cpp, "probe_cuda_budget"):
+                # free memory 수치만 보면 fragmentation 과 driver reserve 가 반영되지 않으므로,
+                # 네이티브 확장에서 실제 cudaMalloc 반복 시도로 안전 예산을 계산한다.
                 probed_free_mb, probed_total_mb, safe_budget_mb = _cpp.probe_cuda_budget(
                     self.cfg.gpu_target_memory_mb,
                     self.cfg.gpu_memory_reserve_mb,
@@ -621,6 +649,8 @@ class ModelLoader:
 
         gpu_layers = min(gpu_layers, total_layers)
         first_gpu_layer = total_layers - gpu_layers
+        # 임베딩과 lm_head 는 상대적으로 메모리 부담이 크고 전송 이득이 제한적이어서 CPU 유지,
+        # 실제 계산량이 큰 후반 transformer block 만 GPU 에 배치한다.
         device_map: Dict[str, Any] = {
             "model.embed_tokens": "cpu",
             "lm_head": "cpu",
@@ -805,6 +835,7 @@ class InferenceEngine:
         """채팅 메시지 리스트를 모델 입력 프롬프트 문자열로 변환한다."""
         rendered: List[Dict[str, str]] = []
         if not any(m["role"] == "system" for m in messages):
+            # 시스템 메시지가 빠진 요청도 서버 정책(system_prompt)은 항상 앞에 보강한다.
             rendered.append({"role": "system", "content": self.cfg.system_prompt})
         rendered.extend(messages)
 
@@ -834,12 +865,16 @@ class InferenceEngine:
             max_length=self.cfg.max_input_tokens,
             padding=False,
         )
+        # 하이브리드 device_map 을 쓸 수 있으므로, 단순히 모델 첫 파라미터가 아니라
+        # 실제 입력 임베딩이 위치한 디바이스를 기준으로 토큰을 올린다.
         target_device = ModelLoader.resolve_input_device(self.model)
         return {k: v.to(target_device) for k, v in encoded.items()}
 
     # ── 샘플링 전략 ──
 
     def _choose_do_sample(self, temperature: float) -> bool:
+        # CPU 추론에서는 sampling 이 느리고 불안정할 수 있어,
+        # 낮은 temperature 구간은 강제로 greedy 로 고정할 수 있게 해 둔다.
         if (
             self.active_device != "cuda"
             and self.cfg.cpu_force_greedy
@@ -907,6 +942,8 @@ class InferenceEngine:
         """model.generate() 에 전달할 인자 딕셔너리를 구성한다."""
         kwargs: Dict[str, Any] = {
             **encoded,
+            # 외부 요청이 더 크더라도 서버는 1024 토큰까지만 허용해
+            # OOM 가능성을 상단에서 한 번 더 제한한다.
             "max_new_tokens": min(max_new_tokens, 1024),
             "do_sample": do_sample,
             "repetition_penalty": repetition_penalty,
@@ -950,6 +987,8 @@ class InferenceEngine:
             print("[WARN] 생성 중 OOM 발생, 축소 재시도...")
             self.mem.cleanup_after_oom()
 
+            # 한 번 더 같은 길이로 재시도하는 것은 의미가 없으므로,
+            # 토큰 수를 즉시 1/4 수준으로 줄여 짧은 응답이라도 우선 확보한다.
             kwargs["max_new_tokens"] = max(16, min(max_new_tokens // 4, 64))
             with torch.inference_mode():
                 with self._get_autocast(runtime_dtype):
@@ -1027,11 +1066,13 @@ _cfg = AppConfig()
 
 
 class Message(BaseModel):
+    """OpenAI chat message 형식을 그대로 받기 위한 최소 스키마."""
     role: str
     content: str
 
 
 class ChatRequest(BaseModel):
+    """/v1/chat/completions 요청 본문."""
     messages: List[Message]
     max_new_tokens: int = Field(default=_cfg.max_new_tokens, ge=1, le=1024)
     temperature: float = Field(default=_cfg.temperature, ge=0.0, le=2.0)
@@ -1041,6 +1082,7 @@ class ChatRequest(BaseModel):
 
 
 class GenerateRequest(BaseModel):
+    """/generate 요청 본문."""
     prompt: str
     max_new_tokens: int = Field(default=_cfg.max_new_tokens, ge=1, le=1024)
     temperature: float = Field(default=_cfg.temperature, ge=0.0, le=2.0)
@@ -1069,6 +1111,8 @@ def create_app() -> Tuple[FastAPI, AppConfig]:
     # ── Lifespan 핸들러 (서버 시작/종료) ──
     @asynccontextmanager
     async def lifespan(application: FastAPI):
+        # 부팅 로그는 배포 환경에서 현재 어떤 경로로 모델이 올라갔는지 확인하는
+        # 가장 직접적인 단서이므로, 요청 전 핵심 상태를 모두 출력한다.
         print("[INFO] ── 서버 시작 ──")
         print(f"  model_id        = {cfg.model_id}")
         print(f"  model_source    = {cfg.model_source}")
@@ -1082,6 +1126,8 @@ def create_app() -> Tuple[FastAPI, AppConfig]:
 
         if cfg.enable_warmup:
             try:
+                # 짧은 워밍업으로 tokenizer/model.generate 경로를 미리 한 번 태워 두면
+                # 첫 실제 요청의 지연과 지연성 예외를 줄일 수 있다.
                 engine.generate_once(
                     prompt="Hello",
                     max_new_tokens=min(cfg.warmup_max_new_tokens, 4),
@@ -1117,6 +1163,8 @@ def create_app() -> Tuple[FastAPI, AppConfig]:
         cuda_mem = {}
         if torch.cuda.is_available():
             try:
+                # allocator 기준 수치를 그대로 노출해,
+                # "CUDA 요청이지만 실제로는 CPU 로드" 같은 상태를 빠르게 식별한다.
                 cuda_mem = {
                     "cuda_memory_allocated": int(torch.cuda.memory_allocated()),
                     "cuda_memory_reserved": int(torch.cuda.memory_reserved()),
@@ -1177,6 +1225,7 @@ def create_app() -> Tuple[FastAPI, AppConfig]:
             raise HTTPException(status_code=400, detail="messages must not be empty")
 
         started = time.time()
+        # Pydantic 모델을 내부 추론 엔진이 기대하는 단순 dict 목록으로 변환한다.
         messages = [{"role": m.role, "content": m.content} for m in req.messages]
         prompt = engine.build_prompt(messages)
 

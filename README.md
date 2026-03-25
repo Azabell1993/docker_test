@@ -52,6 +52,130 @@
 | LLM 활용 | `지연에 민감한 슬라이스 분석`, `QoS 이상 탐지 질의` |
 | 현재 반영 범위 | raw/prepared 디렉터리와 prep manifest만 추가 |
 
+#### 0. 데이터셋 준비 및 JSONL 변환
+- input
+```
+$ $ cd /home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack
+/usr/bin/python dataset/scripts/prepare_network_slicing_dataset.py
+```
+
+- output
+```
+[dataset-prep] prepared target dataset scaffold
+[dataset-prep] raw_dir=/home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack/dataset/raw/network_slicing_qos
+[dataset-prep] prepared_dir=/home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack/dataset/prepared/network_slicing_qos
+[dataset-prep] detected_raw_csv=1
+[dataset-prep] primary_csv=6G_network_slicing_qos_dataset_2345.csv
+[dataset-prep] parsed_rows=2345
+```
+
+#### 1. 서버 백 그라운드 가동
+- input
+```
+cd /home/kmu-scrc/jiwoo_research_docker
+./start_server.sh llama
+```
+
+- output
+```
+--- [3/3] llama 서버 시작 (포트 8000) ---
+[+] up 1/1
+ ✔ Container jetson_slm_stack-llama32-server-1 Started                                                                                                                                                                                                                                                                                      0.9s
+서버 준비 대기 중 (최대 150초)...
+  대기 중... (5초)
+  대기 중... (10초)
+
+=== llama 서버 준비 완료! (3×5 = 15초) ===
+{
+    "ok": true,
+    "model_id": "meta-llama/Llama-3.2-1B-Instruct",
+    "model_source": "./models/meta-llama__Llama-3.2-1B-Instruct",
+    "requested_device": "cuda",
+    "active_device": "cpu",
+    "model_device": "cpu",
+    "dtype": "torch.float32",
+    "cuda_available": true,
+    "load_mode": "cpu-bfloat16",
+    "load_in_4bit_requested": false,
+    "load_in_4bit_active": false,
+    "cpu_threads": 6,
+    "cpu_interop_threads": 1,
+    "bnb_config_available": true,
+    "cuda_memory_allocated": 0,
+    "cuda_memory_reserved": 0,
+    "cuda_memory_total": 7990046720,
+    "max_input_tokens": 512,
+    "max_new_tokens_default": 128
+}
+```
+
+#### 2. 데이터셋 테스트
+```
+./test_dataset.sh llama --split test --api chat
+```
+
+#### 3. 가장 최근 끊긴 파일 기준으로 자동 재개
+```
+cd /home/kmu-scrc/jiwoo_research_docker
+./test_dataset.sh llama --split test --api chat --resume
+```
+
+#### 4. 특정 결과 파일 기준으로 재개
+```
+cd /home/kmu-scrc/jiwoo_research_docker
+./test_dataset.sh llama --split test --api chat --resume test_slm_output/dataset_eval_llama_test_20260324_193144.jsonl
+```
+
+#### 5. 재개하면서 로그 파일도 별도 저장
+```
+cd /home/kmu-scrc/jiwoo_research_docker
+./test_dataset.sh llama --split test --api chat \
+  --resume test_slm_output/dataset_eval_llama_test_20260324_193144.jsonl \
+  --log-file test_slm_output/dataset_eval_llama_test_resume.log
+```
+
+#### 6. 로그 마지막 확인
+```
+tail -n 50 test_slm_output/dataset_eval_llama_test_20260324_193144.log
+```
+
+#### 7. 결과 파일 진행률 확인
+```
+wc -l test_slm_output/dataset_eval_llama_test_20260324_193144.jsonl
+wc -l jetson_slm_stack/dataset/prepared/network_slicing_qos/test.jsonl
+```
+
+#### 8. 전체 완주 여부 확인
+```
+wc -l /home/kmu-scrc/jiwoo_research_docker/test_slm_output/dataset_eval_llama_test_20260324_193144.jsonl
+wc -l /home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack/dataset/prepared/network_slicing_qos/test.jsonl
+```
+
+#### 9. 수집 데이터셋 기반 LLM 적용 및 성능 검증
+
+- 수행 흐름:
+  1. `prepare_network_slicing_dataset.py`가 CSV 한 행을 `instruction`, `expected`, `metadata` 구조의 JSONL 샘플로 변환
+  2. `test_dataset.sh`가 `test.jsonl`을 한 줄씩 읽음
+  3. 각 샘플의 `instruction`을 LLM 서버(`chat` 또는 `generate`)에 전송
+  4. LLM이 생성한 응답을 `generated` 필드로 수신
+  5. `expected`와 `generated`를 함께 `test_slm_output/dataset_eval_*.jsonl`에 저장
+
+- 코드 기준 LLM 평가 실행 위치:
+  - 샘플 루프 시작: `test_dataset.sh:204`
+  - chat API 호출: `test_dataset.sh:227-244`
+  - generate API 호출: `test_dataset.sh:246-262`
+  - 결과 JSONL 저장: `test_dataset.sh:286-307`
+
+- 상세 리포트:
+  - `llm_dataset_evaluation_flow_report.md`
+
+- 결과 예시 해석:
+  - `dataset_eval_llama_test_20260324_193144.jsonl`의 `instruction`은 CSV 행에서 만든 프롬프트
+  - `expected`는 규칙 기반 기준 답변
+  - `generated`는 Llama가 실제 생성한 응답
+  - 따라서 이 파일은 "데이터셋 입력 대비 실제 LLM 출력 로그"로 사용 가능
+
+
 ## 플랫폼 특성
 
 | 항목 | 값 |
