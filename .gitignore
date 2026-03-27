@@ -27,5 +27,3 @@ jetson_slm_stack/dataset/prepared/network_slicing_qos/*.tmp
 jetson_slm_stack/dataset/prepared/network_slicing_qos/*.bak
 jetson_slm_stack/dataset/prepared/network_slicing_qos/__pycache__/
 jetson_slm_stack/dataset/prepared/network_slicing_qos/.ipynb_checkpoints/
-
-dataset/

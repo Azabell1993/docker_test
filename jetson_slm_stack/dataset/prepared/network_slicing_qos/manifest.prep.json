@@ -1,0 +1,210 @@
+{
+  "name": "6G Network Slicing QoS",
+  "name_ko": "네트워크 슬라이싱",
+  "source": {
+    "provider": "Kaggle",
+    "url": "https://www.kaggle.com/datasets/ziya07/wireless-network-slicing-dataset",
+    "dataset_id": "ziya07/wireless-network-slicing-dataset"
+  },
+  "status": "ready",
+  "format": "csv",
+  "characteristics": [
+    "throughput",
+    "latency",
+    "packet_loss_rate"
+  ],
+  "primary_uses": [
+    "QoS prediction",
+    "slice optimization"
+  ],
+  "llm_use_cases": [
+    "지연에 민감한 슬라이스 분석",
+    "QoS 이상 탐지 질의",
+    "슬라이스 정책 변경 전후 비교 설명"
+  ],
+  "expected_raw_files": [
+    "6G_network_slicing_qos_dataset_2345.csv"
+  ],
+  "normalization_plan": {
+    "target_schema": [
+      "slice_id",
+      "service_type",
+      "throughput",
+      "latency",
+      "packet_loss_rate",
+      "timestamp",
+      "label"
+    ],
+    "pending_tasks": [
+      "inspect original Kaggle columns",
+      "map raw CSV columns to target schema",
+      "define train/val/test split strategy",
+      "design instruction-answer templates for LLM anomaly analysis"
+    ]
+  },
+  "raw_dir": "/home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack/dataset/raw/network_slicing_qos",
+  "prepared_dir": "/home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack/dataset/prepared/network_slicing_qos",
+  "raw_csv_files": [
+    "6G_network_slicing_qos_dataset_2345.csv"
+  ],
+  "raw_csv_count": 1,
+  "expected_primary_file": "6G_network_slicing_qos_dataset_2345.csv",
+  "detected_primary_file": "6G_network_slicing_qos_dataset_2345.csv",
+  "csv_inspection": {
+    "raw_file": "6G_network_slicing_qos_dataset_2345.csv",
+    "row_count": 2345,
+    "columns": [
+      "Network Slice ID",
+      "Timestamp",
+      "Device ID",
+      "Traffic Load (bps)",
+      "Traffic Type",
+      "Network Utilization (%)",
+      "Latency (ms)",
+      "Packet Loss Rate (%)",
+      "Signal Strength (dBm)",
+      "Bandwidth Utilization (%)",
+      "Network Slice Failure",
+      "QoS Metric (Throughput)",
+      "Overload Status",
+      "Device Type",
+      "Region",
+      "Network Failure Count",
+      "Time of Day",
+      "Weather Conditions"
+    ],
+    "normalized_columns": {
+      "Network Slice ID": "network_slice_id",
+      "Timestamp": "timestamp",
+      "Device ID": "device_id",
+      "Traffic Load (bps)": "traffic_load_bps",
+      "Traffic Type": "traffic_type",
+      "Network Utilization (%)": "network_utilization_percent",
+      "Latency (ms)": "latency_ms",
+      "Packet Loss Rate (%)": "packet_loss_rate_percent",
+      "Signal Strength (dBm)": "signal_strength_dbm",
+      "Bandwidth Utilization (%)": "bandwidth_utilization_percent",
+      "Network Slice Failure": "network_slice_failure",
+      "QoS Metric (Throughput)": "qos_metric_throughput",
+      "Overload Status": "overload_status",
+      "Device Type": "device_type",
+      "Region": "region",
+      "Network Failure Count": "network_failure_count",
+      "Time of Day": "time_of_day",
+      "Weather Conditions": "weather_conditions"
+    },
+    "preview_rows": [
+      {
+        "network_slice_id": "3",
+        "timestamp": "2025-01-01 00:00:00",
+        "device_id": "194",
+        "traffic_load_bps": "0.6835965669821316",
+        "traffic_type": "3",
+        "network_utilization_percent": "0.8022251590121883",
+        "latency_ms": "0.40946219498594394",
+        "packet_loss_rate_percent": "0.7179506755817758",
+        "signal_strength_dbm": "0.05189169357499379",
+        "bandwidth_utilization_percent": "0.9826182399611003",
+        "network_slice_failure": "0",
+        "qos_metric_throughput": "0.175968109641723",
+        "overload_status": "0",
+        "device_type": "2",
+        "region": "0",
+        "network_failure_count": "0",
+        "time_of_day": "1",
+        "weather_conditions": "0"
+      },
+      {
+        "network_slice_id": "4",
+        "timestamp": "2025-01-01 01:00:00",
+        "device_id": "197",
+        "traffic_load_bps": "0.13488239064823143",
+        "traffic_type": "2",
+        "network_utilization_percent": "0.4346291099821933",
+        "latency_ms": "0.6628685654932077",
+        "packet_loss_rate_percent": "0.6799898624783411",
+        "signal_strength_dbm": "0.8564191232033331",
+        "bandwidth_utilization_percent": "0.18057662670752794",
+        "network_slice_failure": "0",
+        "qos_metric_throughput": "0.6268090456967248",
+        "overload_status": "1",
+        "device_type": "0",
+        "region": "1",
+        "network_failure_count": "2",
+        "time_of_day": "2",
+        "weather_conditions": "1"
+      },
+      {
+        "network_slice_id": "1",
+        "timestamp": "2025-01-01 02:00:00",
+        "device_id": "159",
+        "traffic_load_bps": "0.3434397841899556",
+        "traffic_type": "0",
+        "network_utilization_percent": "0.8699715264654251",
+        "latency_ms": "0.4654701398825064",
+        "packet_loss_rate_percent": "0.831167479582426",
+        "signal_strength_dbm": "0.9282508019665483",
+        "bandwidth_utilization_percent": "0.590927834779766",
+        "network_slice_failure": "1",
+        "qos_metric_throughput": "0.5797029143592672",
+        "overload_status": "1",
+        "device_type": "2",
+        "region": "2",
+        "network_failure_count": "3",
+        "time_of_day": "1",
+        "weather_conditions": "1"
+      },
+      {
+        "network_slice_id": "3",
+        "timestamp": "2025-01-01 03:00:00",
+        "device_id": "163",
+        "traffic_load_bps": "0.17105995316993264",
+        "traffic_type": "0",
+        "network_utilization_percent": "0.18055742985443657",
+        "latency_ms": "0.6314423107182712",
+        "packet_loss_rate_percent": "0.04145829985549497",
+        "signal_strength_dbm": "0.08959307459202881",
+        "bandwidth_utilization_percent": "0.08947615738152725",
+        "network_slice_failure": "1",
+        "qos_metric_throughput": "0.3396262004023247",
+        "overload_status": "1",
+        "device_type": "2",
+        "region": "1",
+        "network_failure_count": "0",
+        "time_of_day": "0",
+        "weather_conditions": "0"
+      },
+      {
+        "network_slice_id": "3",
+        "timestamp": "2025-01-01 04:00:00",
+        "device_id": "187",
+        "traffic_load_bps": "0.9437304689238878",
+        "traffic_type": "1",
+        "network_utilization_percent": "0.9481850635855706",
+        "latency_ms": "0.4501923336674747",
+        "packet_loss_rate_percent": "0.02296405087569783",
+        "signal_strength_dbm": "0.11248915075225607",
+        "bandwidth_utilization_percent": "0.7338519597018451",
+        "network_slice_failure": "0",
+        "qos_metric_throughput": "0.5165376855557023",
+        "overload_status": "0",
+        "device_type": "1",
+        "region": "2",
+        "network_failure_count": "0",
+        "time_of_day": "1",
+        "weather_conditions": "2"
+      }
+    ]
+  },
+  "splits": {
+    "train": 1877,
+    "val": 234,
+    "test": 234
+  },
+  "split_rule": {
+    "train": 8,
+    "val": 1,
+    "test": 1
+  },
+  "next_step": "Run test_dataset.sh against the generated train/val/test JSONL files if the server is ready."
+}
