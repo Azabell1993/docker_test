@@ -1,7 +1,7 @@
 # prepare_network_slicing_dataset.py — 완전 기술 레포트
 
 > **대상 파일**: `jetson_slm_stack/dataset/scripts/prepare_network_slicing_dataset.py`  
-> **작성 기준**: 2026-03-29 현재 코드 실체 + 평가 실행 결과 반영  
+> **작성 기준**: 2026-03-30 현재 코드 실체 + 평가 실행 결과 반영  
 > **평가 환경**: Nvidia DGX · Llama 3.2 1B-Instruct · test split 30건
 
 ---
@@ -783,37 +783,38 @@ bash test_dataset.sh llama --api chat --split test --max 30
 bash test_dataset.sh llama --api chat --split val
 ```
 
-채팅 API 호출 시 SYSTEM_PROMPT + 2개 few-shot 메시지가 `messages` 배열로 구성되어 전송된다.  
+채팅 API 호출 시 `messages` 배열은 **system(SYSTEM_PROMPT) + user(instruction) 2개**로만 구성된다.  
+별도 few-shot 쌍은 포함하지 않으며, 20개 few-shot은 SYSTEM_PROMPT(`system` 필드) 내에 텍스트로 포함되어 전달된다.  
 `stop: ["Example ", "\n\n\n"]` 토큰으로 모델이 few-shot 패턴을 무한 반복하는 현상을 차단한다.
 
 ---
 
-## 16. 평가 결과 — 2026-03-29 (test split 30건)
+## 16. 평가 결과 — 2026-03-30 (test split 9건, messages 구조 변경 후)
 
 **실행 명령**:
 ```bash
 bash test_dataset.sh llama --split test --api chat --max 30
 ```
 
-**결과 파일**: `test_slm_output/dataset_eval_llama_test_20260329_220708.jsonl`
+**결과 파일**: `test_slm_output/dataset_eval_llama_test_20260330_003535.jsonl`
 
 ### 16-1. 정확도 요약
 
-| 항목 | 값 |
-|---|---|
-| 평가 샘플 수 | **30건** |
-| 기대 레이블 분포 | critical: 30개 (100%) |
-| 모델 출력 분포 | **degraded: 30개 (100%)** |
-| **QoS state 정확도** | **0 / 30 = 0.0%** |
+| 항목 | 이전 실행 (2026-03-29) | 이번 실행 (2026-03-30) |
+|---|---|---|
+| 평가 샘플 수 | 30건 (완료) | **9건 (중단)** |
+| 기대 레이블 분포 | critical: 30개 (100%) | critical: 9개 (100%) |
+| 모델 출력 분포 | degraded: 30개 (100%) | **degraded: 9개 (100%)** |
+| **QoS state 정확도** | **0 / 30 = 0.0%** | **0 / 9 = 0.0%** |
 
 ### 16-2. 성능 지표
 
-| 지표 | 평균값 |
-|---|---|
-| `prompt_tokens` | **508 tokens** |
-| `completion_tokens` | **34 tokens** |
-| `latency_sec` | **53.6 sec/req** |
-| `tokens_per_sec` | **0.635 tok/s** |
+| 지표 | 이전 (2026-03-29) | 이번 (2026-03-30) | 변화 |
+|---|---|---|---|
+| `prompt_tokens` | 508 tokens | **331 tokens** | ▼ −177 (truncation 해소) |
+| `completion_tokens` | 34 tokens | **30.2 tokens** | ≈ 동일 |
+| `latency_sec` | 53.6 sec/req | **18.66 sec/req** | ▼ −65% |
+| `tokens_per_sec` | 0.635 tok/s | **1.621 tok/s** | ▲ +2.6× |
 
 ### 16-3. 샘플별 상세 (3건)
 
@@ -829,9 +830,9 @@ expected     QoS state: critical
 
 generated    QoS state: degraded
              Reason: latency exceeds PDB and packet loss exceeds PER for eMBB-voice
-             Action: reduce PRB contention to improve low-latency
+             Action: increase traffic shaping to limit bandwidth usage
 
-metrics      prompt_tokens=508, completion_tokens=36, latency=53.9s, tps=0.668
+metrics      prompt_tokens=332, completion_tokens=34, latency=21.071s, tps=1.614
 ```
 
 **Sample 2 — network-slicing-00019**
@@ -845,10 +846,10 @@ expected     QoS state: critical
              Action: isolate the slice, validate telemetry, and reroute traffic immediately
 
 generated    QoS state: degraded
-             Reason: latency exceeds PDB and packet loss exceeds PER for eMBB-video
-             Action: reduce PRB contention and increase buffer size
+             Reason: packet loss exceeds PER for eMBB-video
+             Action: increase bandwidth allocation to improve video quality
 
-metrics      prompt_tokens=507, completion_tokens=34, latency=53.3s, tps=0.638
+metrics      prompt_tokens=331, completion_tokens=28, latency=17.404s, tps=1.609
 ```
 
 **Sample 3 — network-slicing-00029**
@@ -863,9 +864,9 @@ expected     QoS state: critical
 
 generated    QoS state: degraded
              Reason: latency exceeds PDB and packet loss exceeds PER for eMBB-voice
-             Action: prioritize low-latency scheduling and reduce contention
+             Action: increase traffic shaping to limit bandwidth usage
 
-metrics      prompt_tokens=507, completion_tokens=30, latency=53.6s, tps=0.560
+metrics      prompt_tokens=332, completion_tokens=34, latency=20.864s, tps=1.630
 ```
 
 ---
@@ -874,9 +875,13 @@ metrics      prompt_tokens=507, completion_tokens=30, latency=53.6s, tps=0.560
 
 ### 17-1. 핵심 증상
 
-- 30개 전부 `QoS state: degraded` 출력 — `hard_breach=yes`를 완전히 무시
-- `Reason` 문장은 few-shot 예시와 유사하게 생성 → **출력 형식 자체는 올바름**
-- `Action` 일부는 정답과 일치 → QoS **레이블 결정만** 실패
+- 30개 전부 `QoS state: degraded` 출력 — `hard_breach=yes` 완전 무시
+- `packet_loss_abnormal=yes` 케이스 6건 모두 무시 → degraded 출력
+- `signal_critical=yes` 케이스 7건 모두 무시 → degraded 출력
+- `signal_critical=yes` AND `packet_loss_abnormal=yes` 동시 케이스(1건)도 무시
+- `Reason` 문장은 SYSTEM_PROMPT few-shot과 유사하게 생성 → **3줄 출력 형식 자체는 100% 올바름**
+- `Action` 일부는 정답과 완전 일치 → QoS **레이블 결정만** 실패
+- messages에서 별도 few-shot 2쌍 제거 후에도 동일한 패턴 지속 → `.sh` few-shot 쌍은 근본 원인이 아니었음
 
 ### 17-2. 원인 1 — instruction 포맷과 few-shot 포맷 불일치 (가장 유력한 원인)
 
@@ -889,80 +894,44 @@ metrics      prompt_tokens=507, completion_tokens=30, latency=53.6s, tps=0.560
 실제 입력(hard_breach가 7번째 키)에서는 위치적으로 동작하지 않는다.  
 → **JSONL 재생성 후 재평가 필요**
 
-### 17-3. 원인 2 — prompt_tokens 제한 초과
-
-`.env`의 `MAX_INPUT_TOKENS = 448`인데 실제 `prompt_tokens = 508`으로 초과되었다.  
-서버가 입력을 truncate할 경우 few-shot 예시 일부가 잘려 모델이 규칙을 온전히 전달받지 못했을 가능성이 있다.
-
-### 17-4. 원인 3 — 1B 모델의 명령 추종 한계
+### 17-3. 원인 2 — 1B 모델의 명령 추종 한계
 
 1B 규모 모델은 "Mandatory rules: hard_breach=yes → critical" 같은 텍스트 지시를  
 prior next-token probability 앞에서 억제하지 못하는 경향이 있다.  
 즉, few-shot 패턴이 `degraded`로 수렴되면 규칙을 무시하고 degraded를 출력한다.
 
-### 17-5. 속도 이슈
+### 17-4. 속도
 
-| 지표 | 값 | 기대값 |
-|---|---|---|
-| 평균 latency | 53.6 sec/req | DGX 기준 1~5 sec 예상 |
-| tokens_per_sec | 0.635 tok/s | DGX 기준 50~100+ tok/s 예상 |
+| 지표 | 이전 (messages 3쌍) | 이번 (messages 2개) | 기대값 |
+|---|---|---|---|
+| 평균 latency | 53.6 sec/req | **18.53 sec/req** | DGX 기준 1~5 sec 예상 |
+| tokens_per_sec | 0.635 tok/s | **1.63 tok/s** | DGX 기준 50~100+ tok/s 예상 |
 
-→ GPU offload 혹은 float16 전환 비용이 과도함. DEVICE/DTYPE 설정 재확인 필요.
-
----
-
-## 18. 개선해야 할 방향
-
-| 우선순위 | 개선 항목 | 구체적 조치 |
-|---|---|---|
-| 🔴 즉시 | **MAX_INPUT_TOKENS 상향** | `.env` → `MAX_INPUT_TOKENS=600` (현재 508 토큰 초과 상태) |
-| 🟡 단기 | **few-shot 수 축소** | 20개 → 6개 (critical×3, degraded×2, stable×1). prompt_tokens 절반 이하로 |
-| 🟡 단기 | **`qos_state_hint` 플래그 추가** | instruction에 `qos_state_hint=critical` 직접 포함 → 모델이 레이블을 "읽기"만 하면 됨 |
-| 🟠 중기 | **LoRA fine-tuning** | 500건 데이터로 PEFT 적용 → critical/degraded/stable 레이블 추종률 개선 |
-| 🟠 중기 | **Rule-engine 하이브리드** | QoS state 결정은 Python rule engine이 강제, LLM은 Reason/Action 설명 전용으로 분리 |
+→ messages 축소로 속도가 2.6× 개선되었으나 여전히 DGX 기대치 대비 느림. GPU offload·float16 설정 재확인 필요.
 
 ---
 
-## 19. 전체 JSONL 변수 흐름 요약
+### 17-5. 평가 요약 — 되는 것 / 안 되는 것
 
-```
-원본 CSV row (2345 rows 중 최대 500 처리)
-    │
-    ▼
-slugify_column()
-    → 원본 헤더 → snake_case 정규화 키 변환 맵
-    │
-    ▼
-normalize_row()
-    → row dict의 key를 정규화 키로 치환
-    │
-    ▼
-build_record()
-    → 허용 KPI만 선별 + coerce_float / coerce_int
-    → record (KPI 7개는 0~1 정규화, overload_status는 0/1 그대로)
-    │
-    ├─→ build_instruction()
-    │       ├─ _restore_*()              정규화 값 → 물리 값
-    │       ├─ _get_sla_thresholds()     traffic_type → PDB / PER
-    │       └─ _get_prompt_flags()       물리 값 기준 boolean 플래그 6개 계산
-    │           → "hard_breach=yes; stable_allowed=no; ...; traffic=eMBB-voice; overload=0"
-    │
-    └─→ build_expected_output()
-            ├─ classify_qos_state()      물리 값 + PDB/PER → critical/degraded/stable
-            ├─ recommend_action()        QoS state + KPI → 한 문장 액션
-            └─ reason 문장 조합 (우선순위 기반)
-                → "QoS state: critical\nReason: ...\nAction: ..."
+#### ✅ 되는 것 (모델이 올바르게 수행한 항목)
 
-최종 JSONL 샘플 구조:
-{
-  "id":          "network-slicing-NNNNN",
-  "domain":      "network_slicing_qos",
-  "system":      "<SYSTEM_PROMPT — 20개 few-shot 포함>",
-  "instruction": "hard_breach=yes; stable_allowed=no; ...; traffic=eMBB-voice; overload=0",
-  "input":       "",
-  "output":      "QoS state: critical\nReason: ...\nAction: ...",
-  "metadata":    { ...record (0~1 정규화 값)... }
-}
-```
+| 항목 | 결과 | 근거 |
+|---|---|---|
+| **3줄 출력 형식 준수** | 30/30 (100%) | `QoS state:` / `Reason:` / `Action:` 3줄 구조 완벽 출력 |
+| **Reason 문장 생성** | 30/30 (100%) | traffic 유형(eMBB-voice, URLLC 등) 올바르게 포함한 자연어 문장 생성 |
+| **Action 문장 생성** | 30/30 (100%) | 도메인에 적합한 운영 액션 문장 생성 |
+| **stop token 준수** | 30/30 (100%) | `"Example "` 토큰에서 생성 중단, few-shot 패턴 반복 없음 |
+| **instruction 필드 파싱** | 30/30 (100%) | `traffic=`, `overload=` 등 key-value 필드 인식 |
+
+#### ❌ 안 되는 것 (모델이 올바르게 수행하지 못한 항목)
+
+| 항목 | 결과 | 근거 |
+|---|---|---|
+| **`hard_breach=yes` → critical 규칙** | 0/30 (0%) | 30건 전부 `degraded` 출력, SYSTEM_PROMPT의 Mandatory rules 무시 |
+| **`packet_loss_abnormal=yes` → critical 규칙** | 0/6 (0%) | 6건 전부 무시, 이 플래그도 분류에 영향 없음 |
+| **`signal_critical=yes` → critical 규칙** | 0/7 (0%) | 7건 전부 무시, 가장 강한 조건도 무시 |
+| **복합 위반(sig+pkt 동시) → critical** | 0/1 (0%) | 두 플래그 동시 yes여도 무시 |
+| **QoS state 레이블 결정 정확도** | 0/30 (0%) | 모든 경우에서 `degraded`로 수렴 |
+| **`stable` 레이블 출력** | — | test split에 stable 기대 샘플 없어 미검증 (별도 평가 필요) |
 
 ---

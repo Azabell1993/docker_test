@@ -265,23 +265,12 @@ Input: $INPUT"
 
     # API 호출
     if [[ "$API_MODE" == "chat" ]]; then
-        # few-shot 2쌍: 새 flags-only instruction 포맷 + 3줄 응답 패턴
-        FS_USER1="traffic=eMBB-voice; overload=0; latency_exceeds_pdb=yes; packet_loss_exceeds_per=yes; packet_loss_abnormal=no; signal_critical=no; hard_breach=yes; stable_allowed=no"
-        FS_ASS1="QoS state: critical\nReason: latency exceeds PDB and packet loss exceeds PER for eMBB-voice\nAction: prioritize low-latency scheduling and reduce PRB contention"
-        FS_USER2="traffic=URLLC; overload=0; latency_exceeds_pdb=no; packet_loss_exceeds_per=no; packet_loss_abnormal=no; signal_critical=no; hard_breach=no; stable_allowed=yes"
-        FS_ASS2="QoS state: stable\nReason: all KPI values are within normal limits for URLLC\nAction: maintain current slice policy and continue KPI monitoring"
-
+        # few-shot은 SYSTEM_PROMPT(system 필드)에 20개 포함 → messages는 system + user만 사용
         if [[ -n "$SYSTEM" ]]; then
             MSG_JSON=$(jq -n \
-                --arg s    "$SYSTEM" \
-                --arg fu1  "$FS_USER1" \
-                --arg fa1  "$FS_ASS1" \
-                --arg fu2  "$FS_USER2" \
-                --arg fa2  "$FS_ASS2" \
-                --arg u    "$FULL_PROMPT" \
+                --arg s "$SYSTEM" \
+                --arg u "$FULL_PROMPT" \
                 '[{role:"system",content:$s},
-                  {role:"user",content:$fu1},{role:"assistant",content:$fa1},
-                  {role:"user",content:$fu2},{role:"assistant",content:$fa2},
                   {role:"user",content:$u}]')
         else
             MSG_JSON=$(jq -n \

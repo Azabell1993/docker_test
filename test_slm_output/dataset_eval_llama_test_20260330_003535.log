@@ -1,0 +1,86 @@
+
+════════════════════════════════════════════════
+  Dataset Evaluation: llama  (port 8000)
+  Split: test   API: /v1/chat/completions
+  temperature=0.1  max_new_tokens=256  top_p=0.9
+════════════════════════════════════════════════
+
+  Model : meta-llama/Llama-3.2-1B-Instruct
+  VRAM  : 769.9 MB / 7619.9 MB
+  Data  : /home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack/dataset/prepared/network_slicing_qos/test.jsonl
+  Samples: 30 / 50
+  Output: /home/kmu-scrc/jiwoo_research_docker/test_slm_output/dataset_eval_llama_test_20260330_003535.jsonl
+  Log   : /home/kmu-scrc/jiwoo_research_docker/test_slm_output/dataset_eval_llama_test_20260330_003535.log
+  Resume: disabled
+
+[00:35:36][  1/30] network-slicing-00009                       21.07s     1.6 tok/s  [ 332 prompt /   34 completion tok]
+[00:35:58][  2/30] network-slicing-00019                       17.40s     1.6 tok/s  [ 331 prompt /   28 completion tok]
+[00:36:17][  3/30] network-slicing-00029                       20.86s     1.6 tok/s  [ 332 prompt /   34 completion tok]
+[00:36:39][  4/30] network-slicing-00039                       21.10s     1.6 tok/s  [ 332 prompt /   34 completion tok]
+[00:37:01][  5/30] network-slicing-00049                       15.98s     1.6 tok/s  [ 330 prompt /   26 completion tok]
+[00:37:18][  6/30] network-slicing-00059                       17.51s     1.6 tok/s  [ 331 prompt /   28 completion tok]
+[00:37:37][  7/30] network-slicing-00069                       21.16s     1.6 tok/s  [ 332 prompt /   34 completion tok]
+[00:37:59][  8/30] network-slicing-00079                       17.38s     1.6 tok/s  [ 331 prompt /   28 completion tok]
+[00:38:17][  9/30] network-slicing-00089                       15.47s     1.7 tok/s  [ 330 prompt /   26 completion tok]
+[00:38:34][ 10/30] network-slicing-00099                       16.14s     1.6 tok/s  [ 330 prompt /   26 completion tok]
+[00:38:51][ 11/30] network-slicing-00109                       18.03s     1.6 tok/s  [ 332 prompt /   29 completion tok]
+[00:39:10][ 12/30] network-slicing-00119                       20.37s     1.6 tok/s  [ 331 prompt /   33 completion tok]
+[00:39:32][ 13/30] network-slicing-00129                       20.12s     1.6 tok/s  [ 331 prompt /   33 completion tok]
+[00:39:53][ 14/30] network-slicing-00139                       17.98s     1.6 tok/s  [ 332 prompt /   29 completion tok]
+[00:40:12][ 15/30] network-slicing-00149                       21.31s     1.6 tok/s  [ 332 prompt /   34 completion tok]
+[00:40:35][ 16/30] network-slicing-00159                       17.38s     1.6 tok/s  [ 331 prompt /   28 completion tok]
+[00:40:53][ 17/30] network-slicing-00169                       21.12s     1.6 tok/s  [ 332 prompt /   34 completion tok]
+[00:41:15][ 18/30] network-slicing-00179                       21.04s     1.6 tok/s  [ 332 prompt /   34 completion tok]
+[00:41:38][ 19/30] network-slicing-00189                       20.98s     1.6 tok/s  [ 332 prompt /   34 completion tok]
+[00:42:00][ 20/30] network-slicing-00199                       16.76s     1.6 tok/s  [ 332 prompt /   27 completion tok]
+[00:42:18][ 21/30] network-slicing-00209                       15.40s     1.7 tok/s  [ 330 prompt /   26 completion tok]
+[00:42:34][ 22/30] network-slicing-00219                       15.80s     1.6 tok/s  [ 330 prompt /   26 completion tok]
+[00:42:51][ 23/30] network-slicing-00229                       20.95s     1.6 tok/s  [ 332 prompt /   34 completion tok]
+[00:43:13][ 24/30] network-slicing-00239                       17.18s     1.7 tok/s  [ 330 prompt /   29 completion tok]
+[00:43:31][ 25/30] network-slicing-00249                       17.92s     1.6 tok/s  [ 332 prompt /   29 completion tok]
+[00:43:50][ 26/30] network-slicing-00259                       16.49s     1.7 tok/s  [ 331 prompt /   28 completion tok]
+[00:44:08][ 27/30] network-slicing-00269                       22.91s     1.6 tok/s  [ 332 prompt /   37 completion tok]
+[00:44:32][ 28/30] network-slicing-00279                       15.82s     1.6 tok/s  [ 330 prompt /   26 completion tok]
+[00:44:49][ 29/30] network-slicing-00289                       17.10s     1.6 tok/s  [ 331 prompt /   28 completion tok]
+[00:45:07][ 30/30] network-slicing-00299                       17.17s     1.7 tok/s  [ 330 prompt /   29 completion tok]
+
+════════════════════════════════════════════════
+          DATASET BENCHMARK REPORT
+════════════════════════════════════════════════
+
+[ Run Summary ]
+  Model:                           meta-llama/Llama-3.2-1B-Instruct
+  Split:                           test
+  API Mode:                        chat
+  Temperature:                     0.1
+  Max New Tokens:                  256
+  Previously Completed:            0
+  Session Success:                 30
+  Session Failed:                  0
+  Total Written / Target:          30 / 30
+
+[ Latency (sec) ]
+  Average:                         18.531
+  Min:                             15.405
+  Max:                             22.913
+  Total (serial sum):              555.9
+
+[ Throughput (tok/s) ]
+  Average:                         1.63
+  Min:                             1.60
+  Max:                             1.70
+
+[ Token Usage ]
+  Total Prompt Tokens:             9936
+  Total Completion Tokens:         905
+  Grand Total:                     10841
+
+[ VRAM (end of run) ]
+  Allocated:                       750.3 MB / 7619.9 MB
+  Reserved:                        758.0 MB / 7619.9 MB
+
+[ Output ]
+  JSONL saved:                     /home/kmu-scrc/jiwoo_research_docker/test_slm_output/dataset_eval_llama_test_20260330_003535.jsonl
+  Run log saved:                   /home/kmu-scrc/jiwoo_research_docker/test_slm_output/dataset_eval_llama_test_20260330_003535.log
+
+════════════════════════════════════════════════
