@@ -1,11 +1,11 @@
 #!/bin/bash
-# test_dataset_4lines_512.sh — 4개 샘플만 별도로 512 토큰 설정으로 평가
+# test_dataset_4lines_128.sh — 4개 샘플만 별도로 128 토큰 설정으로 평가
 
 set -uo pipefail
 
 MODEL_TYPE="${1:-}"
 if [[ "$MODEL_TYPE" != "llama" && "$MODEL_TYPE" != "deepseek" && "$MODEL_TYPE" != "qwen" ]]; then
-    echo "Usage: ./test_dataset_4lines_512.sh [llama|deepseek|qwen] [--api generate|chat] [--split train|val|test]"
+    echo "Usage: ./test_dataset_4lines_128.sh [llama|deepseek|qwen] [--api generate|chat] [--split train|val|test]"
     exit 1
 fi
 shift
@@ -36,7 +36,7 @@ COMPOSE_DIR="$SCRIPT_DIR/jetson_slm_stack"
 DATA_FILE="$COMPOSE_DIR/dataset/prepared/network_slicing_qos/${SPLIT}.jsonl"
 OUTPUT_DIR="$SCRIPT_DIR/test_slm_output"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUT_FILE="$OUTPUT_DIR/dataset_eval_${MODEL_TYPE}_${SPLIT}_4samples_512_${TIMESTAMP}.jsonl"
+OUT_FILE="$OUTPUT_DIR/dataset_eval_${MODEL_TYPE}_${SPLIT}_4samples_128_${TIMESTAMP}.jsonl"
 LOG_FILE="${OUT_FILE%.jsonl}.log"
 
 if [[ ! -f "$DATA_FILE" ]]; then
@@ -55,7 +55,7 @@ else
     PORT=8002
 fi
 
-TEST_MAX_NEW_TOKENS=512
+TEST_MAX_NEW_TOKENS=128
 TEST_TEMPERATURE=0.0
 TEST_TOP_P=1.0
 API_PATH="$([[ "$API_MODE" == "chat" ]] && echo "v1/chat/completions" || echo "generate")"

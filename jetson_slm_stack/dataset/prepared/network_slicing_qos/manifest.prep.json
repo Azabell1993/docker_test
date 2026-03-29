@@ -1,6 +1,6 @@
 {
   "name": "6G Network Slicing QoS",
-  "name_ko": "네트워크 슬라이싱",
+  "name_ko": "네트워크 슬라이싱 QoS",
   "source": {
     "provider": "Kaggle",
     "url": "https://www.kaggle.com/datasets/ziya07/wireless-network-slicing-dataset",
@@ -11,37 +11,25 @@
   "characteristics": [
     "throughput",
     "latency",
-    "packet_loss_rate"
+    "packet_loss_rate",
+    "network_utilization",
+    "bandwidth_utilization",
+    "signal_strength",
+    "overload_status"
   ],
   "primary_uses": [
-    "QoS prediction",
-    "slice optimization"
+    "QoS state classification",
+    "slice SLA risk explanation",
+    "resource adjustment recommendation"
   ],
   "llm_use_cases": [
-    "지연에 민감한 슬라이스 분석",
-    "QoS 이상 탐지 질의",
-    "슬라이스 정책 변경 전후 비교 설명"
+    "3GPP 기반 QoS 이상 탐지",
+    "슬라이스 성능 상태 분류",
+    "즉시 운영 액션 추천"
   ],
   "expected_raw_files": [
     "6G_network_slicing_qos_dataset_2345.csv"
   ],
-  "normalization_plan": {
-    "target_schema": [
-      "slice_id",
-      "service_type",
-      "throughput",
-      "latency",
-      "packet_loss_rate",
-      "timestamp",
-      "label"
-    ],
-    "pending_tasks": [
-      "inspect original Kaggle columns",
-      "map raw CSV columns to target schema",
-      "define train/val/test split strategy",
-      "design instruction-answer templates for LLM anomaly analysis"
-    ]
-  },
   "raw_dir": "/home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack/dataset/raw/network_slicing_qos",
   "prepared_dir": "/home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack/dataset/prepared/network_slicing_qos",
   "raw_csv_files": [
@@ -197,14 +185,16 @@
     ]
   },
   "splits": {
-    "train": 1877,
-    "val": 234,
-    "test": 234
+    "train": 400,
+    "val": 50,
+    "test": 50
   },
   "split_rule": {
     "train": 8,
     "val": 1,
     "test": 1
   },
-  "next_step": "Run test_dataset.sh against the generated train/val/test JSONL files if the server is ready."
+  "max_samples": 500,
+  "policy_note": "Only 3GPP-aligned KPI fields are retained in metadata and used for QoS evaluation. The prompt/output format is compressed for Jetson Orin Nano with Llama 3.2 1B.",
+  "next_step": "Run dataset validation or model inference against the generated JSONL files."
 }

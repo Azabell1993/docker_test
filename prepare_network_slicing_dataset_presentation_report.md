@@ -1,393 +1,968 @@
-# Prepare Network Slicing Dataset 발표 Report
-
-## 1. 발표 목적
-
-이 보고서는 `prepare_network_slicing_dataset.py`가 어떤 문제를 해결하는지, CSV 원본 데이터가 어떤 과정을 거쳐 LLM 학습용 JSONL 데이터셋으로 바뀌는지, 그리고 그 과정에서 사용한 규칙과 설계 근거가 무엇인지를 발표용으로 설명하기 위해 작성되었다.
-
-핵심 질문은 다음 세 가지다.
-
-1. 원본 CSV에서 어떤 컬럼을 읽고 어떻게 정규화하는가
-2. 왜 `instruction`, `output`, `metadata` 구조로 바꾸는가
-3. 왜 `train/val/test = 8:1:1`과 같은 규칙 기반 설계를 사용했는가
-
-## 2. 대상 코드와 역할
-
-- 대상 파일: `jetson_slm_stack/dataset/scripts/prepare_network_slicing_dataset.py`
-- 입력: `6G_network_slicing_qos_dataset_2345.csv`
-- 출력:
-  - `train.jsonl`
-  - `val.jsonl`
-  - `test.jsonl`
-  - `manifest.prep.json`
-  - `csv_schema.json`
-  - `csv_preview.json`
-
-이 스크립트는 단순 포맷 변환기가 아니다. CSV 한 행을 LLM instruction-tuning에 사용할 수 있는 supervised sample로 변환하는 데이터셋 생성기다.
-
-즉 한 row에서 다음을 동시에 만든다.
-
-- `instruction`: 모델에게 줄 문제 문장
-- `output`: 규칙 기반으로 생성한 모범 답안
-- `metadata`: 원본 row에서 선별한 구조화 정보
-
-## 3. 전체 흐름
-
-코드는 아래 5단계 흐름으로 동작한다.
-
-### Flow 2. 대표 CSV 선택
-
-- `detect_primary_csv()`가 우선 사용할 CSV를 선택한다.
-이 설계는 파일명이 정확한 경우 재현성을 유지하고, 그렇지 않은 경우에도 파이프라인 전체가 중단되지 않도록 하기 위한 것이다.
-
-### Flow 3. 헤더 inspection 및 컬럼 정규화 맵 생성
-
-- `inspect_csv()`가 `csv.DictReader`로 헤더를 읽는다.
-- `fieldnames`를 통해 원본 컬럼명을 확보한다.
-- `slugify_column()`으로 컬럼명을 정규화한다.
-
-예를 들면 다음과 같이 바뀐다.
-
-- `Packet Loss Rate %` -> `packet_loss_rate_percent`
-
-이 단계의 목적은 원본 CSV의 표기 흔들림을 제거하고, 이후 코드가 컬럼명을 일관되게 참조하도록 만드는 것이다.
-
-### Flow 4. row 단위 JSONL 변환
-
-- `convert_csv_to_jsonl()`가 CSV를 다시 열고 row를 한 줄씩 읽는다.
-- 각 row마다 `choose_split()`으로 split을 결정한다.
-
-### Flow 5. manifest, schema, preview 저장
-
-- 전처리 결과 요약은 `manifest.prep.json`에 저장한다.
-- 컬럼 구조는 `csv_schema.json`에 저장한다.
-이 단계는 단순 부가 기능이 아니라 데이터 거버넌스 목적을 가진다. 즉, 어떤 CSV를 어떤 규칙으로 어떤 결과물로 바꿨는지 추적 가능하게 만든다.
-## 4. 함수별 설명
-
-
-역할:
-
-- 문자열 값을 float으로 변환한다.
-- 비어 있거나 잘못된 값은 `0.0`으로 대체한다.
-
-- CSV 원본은 기본적으로 문자열이므로 수치 연산 전에 타입 정리가 필요하다.
-- 데이터 품질이 완벽하지 않아도 파이프라인이 멈추지 않게 한다.
-
-
-- 잘못된 값을 0으로 대체하면 오류를 숨길 수 있다.
-- 운영 환경에서는 결측치와 이상치 로깅을 추가하는 것이 더 안전하다.
-
-### 4.2 `coerce_int()`
-
-역할:
-
-의의:
-
-- CSV에서 `1.0`처럼 들어오는 값을 `1`로 정리해 상태 플래그 비교가 가능하게 만든다.
-- 이후 `if failure:` 같은 규칙 기반 분기에서 안정적으로 사용할 수 있다.
-
-### 4.3 `write_json()` / `write_text()`
-역할:
-
-- 결과 파일을 저장한다.
-
-의의:
-
-- 전처리 산출물이 항상 같은 위치 구조에 떨어지도록 보장한다.
-- 재실행 시 디렉터리 존재 여부 때문에 파이프라인이 실패하지 않게 한다.
-
-### 4.4 `collect_raw_csvs()`
-
-
-- raw 디렉터리에 존재하는 CSV 파일명을 전부 수집한다.
-의의:
-
-- `main()`의 Flow 1에 해당한다.
-
-### 4.5 `slugify_column()`
-
-
-- 원본 컬럼명을 코드 친화적인 key로 바꾼다.
-변환 원리:
-
-- 소문자화
-- 공백을 `_`로 변경
-- `%`를 `percent`로 변경
-- `/`를 `_per_`로 변경
-- 중복 `_` 제거
-
-
-- CSV 공급자가 바뀌거나 컬럼 표기법이 조금 달라도 코드 수정 범위를 줄일 수 있다.
-
-### 4.6 `detect_primary_csv()`
-
-
-
-설계 철학:
-
-- 기대 파일명이 있으면 명시적으로 선택한다.
-
-
-- 엄격함과 실용성 사이에서 균형을 잡은 선택이다.
-
-### 4.7 `inspect_csv()`
-
-역할:
-- 원본 컬럼 헤더를 읽고, 정규화 컬럼 맵을 만들고, 행 수와 preview를 계산한다.
-
-왜 필요한가:
-
-- 전처리 전에 데이터 구조를 먼저 이해해야 한다.
-
-
-- `raw_file`
-- `columns`
-- `normalized_columns`
-- `preview_rows`
-
-
-역할:
-
-- 각 row가 `train`, `val`, `test` 중 어디로 갈지 정한다.
-구현 방식:
-
-- `index % 10`을 계산한다.
-- `0~7`은 train
-- `8`은 val
-
-
-- 이 숫자는 데이터셋이 스스로 제공한 정답이 아니다.
-- 작성자가 실험 설계용 기본값으로 채택한 비율이다.
-
-설득력 있는 근거는 다음과 같다.
-1. 표본 효율
-   - 대부분의 표본을 학습에 사용해야 모델이 패턴을 익힐 수 있다.
-   - 따라서 `train = 80%`는 합리적인 기본값이다.
-2. 검증 분리
-   - 모델을 학습시키는 동안 설정과 품질을 확인할 독립 표본이 필요하다.
-   - 그래서 `val = 10%`를 둔다.
-
-3. 최종 평가 보존
-   - 튜닝 과정에 직접 노출되지 않은 hold-out 데이터가 있어야 마지막 평가가 의미를 가진다.
-   - 그래서 `test = 10%`를 둔다.
-
-4. 재현성
-   - 이 코드는 랜덤 분할이 아니라 deterministic 분할이다.
-   - 발표, 비교 실험, 디버깅에 매우 유리하다.
-
-split은 무엇으로 쓰이는가:
-
-- 각 row를 어떤 출력 파일에 저장할지 결정하는 라우팅 기준이다.
-- 즉 `train`, `val`, `test`는 각각 `train.jsonl`, `val.jsonl`, `test.jsonl`로 이어진다.
-
-한계:
-
-- row 순서가 시간순, 지역순, 장비순으로 정렬되어 있다면 편향이 split 전체로 전파될 수 있다.
-
-### 4.9 `build_instruction()`
-
-역할:
-
-
-
-- 따라서 CSV 한 행을 네트워크 엔지니어링 상황 설명으로 바꿔주는 중간 계층이 필요하다.
-
-설계 포인트:
-- 고정 템플릿 사용
-- 핵심 필드를 bullet로 나열
-- float는 소수점 6자리로 고정
-
-효과:
-- 프롬프트 형식의 일관성 확보
-- 샘플 간 비교 용이성 증가
-
-### 4.10 `classify_qos_state()`
-역할:
-
-- metadata를 바탕으로 `stable`, `degraded`, `critical` 중 하나를 부여한다.
-
-중요한 해석:
-- 이 함수는 예측 모델이 아니다.
-- 규칙 기반 weak labeling 엔진이다.
-- 즉, 원본 데이터에 정답 라벨이 없거나 부족한 상황에서 전문가 판단을 흉내 낸 기준 라벨을 생성한다.
-
-
-- `critical`
-  - `overload_status == 1`
-  - `latency >= 0.65`
-  - `packet_loss >= 0.65`
-
-  - `latency >= 0.45`
-  - `packet_loss >= 0.40`
-  - `throughput <= 0.35`
-
-- 그 외는 `stable`
-왜 이런 숫자인가:
-- 현재 코드만 놓고 보면 이 값들은 통계 추정 결과가 아니라 휴리스틱 threshold다.
-- 작성자는 latency와 packet loss가 높고 throughput이 낮을수록 QoS 품질이 나빠진다는 도메인 직관을 수치 경계값으로 고정했다.
-- 또한 실제 장애와 과부하 플래그는 수치보다 우선하는 hard signal로 취급했다.
-
-주의점:
-
-- 만약 실제 단위가 절대 ms, 절대 %, 절대 bps라면 threshold는 재설계해야 한다.
-
-### 4.11 `recommend_action()`
-
-
-
-우선순위:
-
-- 장애
-- 지연
-- 손실
-- 안정 상태
-
-의의:
-
-- QoS 상태 분류만으로 끝내지 않고, 실제 운영자 대응 문장까지 생성한다.
-- 따라서 단순 분류 데이터셋이 아니라 설명형 instruction 데이터셋으로 확장된다.
-
-### 4.12 `build_expected_output()`
-
-
-- `instruction`에 대한 모범 답안을 생성한다.
-
-구성:
-
-2. Failure risk
-
-왜 중요한가:
-
-- 이 함수 덕분에 CSV row가 supervised fine-tuning용 `(instruction, output)` 샘플로 바뀐다.
-- 즉 이 스크립트의 가장 큰 의미는 표 데이터를 바로 LLM 튜닝용 데이터로 바꾸는 데 있다.
-`failure_risk` 기준:
-
-  - 실제 장애 플래그 존재
-  - 과부하 존재
-  - `network_failure_count >= 2`
-
-- `medium`
-  - latency나 packet loss가 경계값 이상
-
-  - 나머지
-
-해석:
-
-- 따라서 ground truth 정답이라기보다 전문가 판단을 모사한 synthetic supervision에 가깝다.
-
-### 4.13 `normalize_row()`
-
-역할:
-- 원본 row의 key를 정규화 컬럼명으로 바꾼다.
-
-
-- 이 함수가 실질적인 row-level normalization 수행 지점이다.
-- 이후 로직은 모두 정규화된 key만 보고 동작한다.
-
-### 4.14 `build_record()`
-
-
-- JSONL 한 샘플의 핵심 payload를 만든다.
-
-처리 순서:
-
-2. 필요한 컬럼만 선별
-4. `instruction` 생성
-5. `output` 생성
-6. 최종 payload 반환
-
-중요 포인트:
-
-- 이 함수가 사실상 전처리 스키마 정의 지점이다.
-- 원본 CSV의 모든 컬럼을 쓰지 않고, 의미 있는 컬럼만 선택한다.
-
-즉 발표에서 다음처럼 설명할 수 있다.
-- 원본 CSV row 전체를 그대로 쓰지 않는다.
-- LLM 판단에 필요한 최소 구조만 `metadata`로 남긴다.
-
-### 4.15 `convert_csv_to_jsonl()`
-
-
-- 실제 파일 변환 루프를 담당한다.
-
-무슨 일이 일어나는가:
-
-1. split별 출력 파일 핸들을 연다.
-2. CSV를 다시 읽는다.
-4. `build_record()`로 payload를 만든다.
-5. 해당 split JSONL 파일에 한 줄씩 저장한다.
-여기서 split은 무엇으로 쓰이는가:
-
-- 단순 라벨이 아니다.
-- 최종적으로 어떤 출력 파일에 저장될지를 결정하는 라우팅 기준이다.
-- 즉 `train`, `val`, `test`는 곧 `train.jsonl`, `val.jsonl`, `test.jsonl` 파일 선택 규칙이다.
-
-
-
-
-순서:
-
-1. 디렉터리 준비
-2. raw CSV 목록 수집
-3. 대표 CSV 선택
-5. row 단위 JSONL 변환
-7. 로그 출력
-발표에서는 `main()`을 전체 시스템 orchestration 계층으로 설명하면 된다.
-
-## 5. 이 코드의 학술적 및 실무적 의미
-
-이 스크립트의 가치는 단순 CSV 전처리에 있지 않다. 더 중요한 의미는 다음과 같다.
-
-
-`classify_qos_state()`와 `build_expected_output()`은 정답 라벨이 완비되지 않은 상황에서 전문가 규칙으로 surrogate label을 만든다. 이는 약지도 데이터셋 구축의 전형적 전략이다.
-
-랜덤 분할 대신 deterministic split을 사용한 것은 연구 재현성과 디버깅 편의성을 높인다. 특히 발표, 보고서, 후속 실험 비교에서 같은 샘플 구성을 반복 재현할 수 있다는 점이 중요하다.
-
-## 6. 한계와 보완 방향
-### 6.1 threshold의 경험적 성격
-
-- 현재 threshold는 경험적 heuristic이다.
-- 원본 데이터 분포를 기반으로 최적화된 값은 아니다.
-
-보완 방향:
-
-- 컬럼 분포 통계 산출
-- percentile 기반 threshold 재설정
-- 도메인 전문가 검토
-
-### 6.2 split 방식의 순서 의존성
-
-- index 기반 split은 재현성이 높지만 row 순서 편향에 취약하다.
-
-보완 방향:
-
-- random split
-- stratified split
-- time-based split
-
-### 6.3 결측치 처리의 보수성
-
-- 현재는 오류 대신 `0` 또는 빈 문자열로 대체한다.
-- 이는 파이프라인 안정성은 높이지만 silent degradation을 유발할 수 있다.
-
-보완 방향:
-
-- 필수 컬럼 검증
-- 결측치 로깅
-- 비정상 row quarantine
-
-## 7. 핵심 포인트
-1. 이 코드는 CSV를 단순 변환하는 것이 아니라, 네트워크 QoS snapshot을 LLM instruction-tuning 샘플로 재구성한다.
-2. 컬럼명 정규화는 원본 스키마의 흔들림을 제거해 이후 로직의 일관성을 보장한다.
-3. `build_record()`는 전처리 파이프라인의 핵심으로, 필요한 컬럼만 골라 metadata를 만들고 그로부터 instruction과 output을 생성한다.
-4. `classify_qos_state()`와 `build_expected_output()`은 규칙 기반 약지도 엔진으로서 synthetic supervision을 만든다.
-5. `8:1:1` split은 최적 해를 증명한 숫자가 아니라, 학습 효율, 검증 분리, 최종 평가 보존, 재현성을 동시에 만족시키는 실용적 기본값이다.
-
-## 8. 결론
-
-`prepare_network_slicing_dataset.py`는 네트워크 QoS CSV를 LLM 평가 및 튜닝용 JSONL 데이터셋으로 바꾸는 핵심 준비 단계다. 이 스크립트는 다음 세 가지를 동시에 달성한다.
-
-1. 컬럼 스키마 정규화
-2. 규칙 기반 라벨 및 설명 생성
-3. 재현 가능한 split과 산출물 관리
-
-따라서 이 코드는 단순 전처리 스크립트가 아니라, 정형 네트워크 운영 데이터를 설명형 LLM 실험 데이터셋으로 전환하는 데이터셋 설계 계층이라고 평가할 수 있다.
+# prepare_network_slicing_dataset.py — 완전 기술 레포트
+
+> **대상 파일**: `jetson_slm_stack/dataset/scripts/prepare_network_slicing_dataset.py`  
+> **작성 기준**: 2026-03-29 현재 코드 실체 + 평가 실행 결과 반영  
+> **평가 환경**: Nvidia DGX · Llama 3.2 1B-Instruct · test split 30건
+
+---
+
+## 1. 스크립트 개요
+
+| 항목 | 내용 |
+|---|---|
+| 파일 | `jetson_slm_stack/dataset/scripts/prepare_network_slicing_dataset.py` |
+| 입력 | `6G_network_slicing_qos_dataset_2345.csv` (Kaggle, 2345 rows) |
+| 출력 | `train.jsonl` / `val.jsonl` / `test.jsonl` / `manifest.prep.json` / `csv_schema.json` / `csv_preview.json` |
+| 분할 규칙 | deterministic 8:1:1 (row index % 10 기준) |
+| 최대 샘플 수 설정 | `MAX_SAMPLES = 50` (실제 실행 결과: train 400 / val 50 / test 50) |
+| 최적화 대상 | Jetson Orin Nano + Llama 3.2 1B-Instruct (Nvidia DGX로 검증) |
+
+이 스크립트는 단순 포맷 변환기가 아니다.  
+CSV 한 row를 `(system, instruction, output)` 쌍으로 바꾸는 **규칙 기반 데이터셋 생성기**이며,  
+모델이 학습·추론 시 볼 입력(`instruction`)과 정답(`output`)을 **동시에 이 스크립트가 만들어낸다**.
+
+---
+
+## 2. 전체 처리 흐름
+
+```
+[Flow 1] raw CSV 목록 수집          collect_raw_csvs()
+[Flow 2] 대표 CSV 선택               detect_primary_csv()
+[Flow 3] 헤더 inspection + 정규화 맵 inspect_csv() + slugify_column()
+[Flow 4] row → JSONL 샘플 변환      convert_csv_to_jsonl() → build_record()
+           ├─ row 정규화               normalize_row()
+           ├─ record 구성              coerce_float / coerce_int + 허용 KPI만 선별
+           ├─ instruction 생성         build_instruction()
+           │    ├─ _get_sla_thresholds()  traffic_type → PDB / PER
+           │    ├─ _restore_*()           정규화 값 → 물리 값
+           │    └─ _get_prompt_flags()    물리 값 기준 boolean 플래그 6개
+           └─ output 생성              build_expected_output()
+                ├─ classify_qos_state()   물리 값 → stable/degraded/critical
+                ├─ recommend_action()     QoS + KPI → 한 문장 액션
+                └─ reason 문장 조합
+[Flow 5] manifest / schema / preview / README 저장
+```
+
+---
+
+## 3. 원본 컬럼 ↔ 정규화 키 매핑
+
+`slugify_column()`이 원본 CSV 헤더를 snake_case key로 변환한다.  
+변환 규칙: 소문자화 → `%→percent`, `/→_per_`, `-·공백→_` → 비허용 문자 `_` 치환 → 중복 `_` 제거
+
+```python
+def slugify_column(name: str) -> str:
+    value = name.strip().lower()
+    for source, target in (("%", "percent"), ("/", "_per_"), ("-", "_"), (" ", "_")):
+        value = value.replace(source, target)
+    value = re.sub(r"[^a-z0-9_]", "_", value)
+    while "__" in value:
+        value = value.replace("__", "_")
+    return value.strip("_")
+```
+
+| 원본 CSV 헤더 | 정규화 키 | record 포함 여부 |
+|---|---|---|
+| Network Slice ID | `network_slice_id` | ✅ 추적용 |
+| Timestamp | `timestamp` | ✅ 추적용 |
+| Device ID | `device_id` | ✅ 추적용 |
+| Traffic Type | `traffic_type` | ✅ QoS 평가 보조 |
+| Network Utilization | `network_utilization_percent` | ✅ KPI |
+| Latency ms | `latency_ms` | ✅ KPI |
+| Packet Loss Rate | `packet_loss_rate_percent` | ✅ KPI |
+| Signal Strength dBm | `signal_strength_dbm` | ✅ KPI |
+| Bandwidth Utilization | `bandwidth_utilization_percent` | ✅ KPI |
+| QoS Metric Throughput | `qos_metric_throughput` | ✅ KPI |
+| Overload Status | `overload_status` | ✅ KPI |
+| Network Slice Failure | `network_slice_failure` | ❌ **비표준 KPI** |
+| Device Type | `device_type` | ❌ **비표준 KPI** |
+| Region | `region` | ❌ **비표준 KPI** |
+| Network Failure Count | `network_failure_count` | ❌ **비표준 KPI** |
+| Time of Day | `time_of_day` | ❌ **비표준 KPI** |
+| Weather Conditions | `weather_conditions` | ❌ **비표준 KPI** |
+
+**비표준 KPI 제거 이유**: 3GPP TS 23.501 표준 KPI가 아니거나 시뮬레이션 아티팩트로 신뢰도가 낮다고 판정.  
+JSONL `metadata`에도 포함되지 않으므로 모델이 간접 참조하는 경로 자체를 차단한다.
+
+---
+
+## 4. `build_record()` — metadata 구성
+
+```python
+def build_record(index: int, row: dict[str, str], normalized_columns: dict[str, str]) -> dict:
+    normalized = normalize_row(row, normalized_columns)
+
+    record = {
+        "network_slice_id": normalized.get("network_slice_id", "0"),
+        "timestamp":        normalized.get("timestamp", ""),
+        "device_id":        normalized.get("device_id", "0"),
+
+        "traffic_type":                  coerce_int(normalized.get("traffic_type", "0")),
+        "network_utilization_percent":   coerce_float(normalized.get("network_utilization_percent", "0")),
+        "latency_ms":                    coerce_float(normalized.get("latency_ms", "0")),
+        "packet_loss_rate_percent":      coerce_float(normalized.get("packet_loss_rate_percent", "0")),
+        "signal_strength_dbm":           coerce_float(normalized.get("signal_strength_dbm", "0")),
+        "bandwidth_utilization_percent": coerce_float(normalized.get("bandwidth_utilization_percent", "0")),
+        "qos_metric_throughput":         coerce_float(normalized.get("qos_metric_throughput", "0")),
+        "overload_status":               coerce_int(normalized.get("overload_status", "0")),
+    }
+
+    return {
+        "id":          f"network-slicing-{index:05d}",
+        "domain":      "network_slicing_qos",
+        "system":      SYSTEM_PROMPT,
+        "instruction": build_instruction(record),
+        "input":       "",
+        "output":      build_expected_output(record),
+        "metadata":    record,
+    }
+```
+
+**record 저장 형식**:
+
+| 필드 | 저장 형식 | 비고 |
+|---|---|---|
+| `network_slice_id`, `timestamp`, `device_id` | str (원본) | 추적용, 분류에 미사용 |
+| `traffic_type` | int (0/1/2/3) | `_get_sst_label()` / `_get_sla_thresholds()` 입력 |
+| KPI 7개 (`latency_ms` 등) | float **0~1 정규화** | 물리값은 `_restore_*()` 호출로 복원 |
+| `overload_status` | int (0 또는 1) | 정규화 없이 그대로 사용 |
+
+---
+
+## 5. 정규화 값 → 물리 값 복원 함수
+
+record에 저장된 값은 Min-Max 정규화 상태다.  
+분류·플래그 계산·instruction 생성 시 전용 복원 함수로 물리 단위로 환산한다.
+
+```python
+def _restore_latency_ms(normalized_latency: float) -> float:
+    return normalized_latency * 495.0 + 5.0          # 5 ms ~ 500 ms
+
+def _restore_packet_loss_percent(normalized_loss: float) -> float:
+    return normalized_loss * 100.0                   # 0% ~ 100%
+
+def _restore_throughput_percent(normalized_throughput: float) -> float:
+    return normalized_throughput * 100.0             # 0% ~ 100%
+
+def _restore_util_percent(normalized_util: float) -> float:
+    return normalized_util * 100.0                   # 0% ~ 100%
+
+def _restore_signal_rsrp_dbm(normalized_signal: float) -> float:
+    return -156.0 + normalized_signal * 125.0        # -156 dBm ~ -31 dBm
+```
+
+| 필드 | 복원 공식 | 물리 범위 |
+|---|---|---|
+| `latency_ms` | `x × 495 + 5` | 5 ms ~ 500 ms |
+| `packet_loss_rate_percent` | `x × 100` | 0% ~ 100% |
+| `qos_metric_throughput` | `x × 100` | 0% ~ 100% |
+| `network_utilization_percent` | `x × 100` | 0% ~ 100% |
+| `bandwidth_utilization_percent` | `x × 100` | 0% ~ 100% |
+| `signal_strength_dbm` | `-156 + x × 125` | -156 dBm ~ -31 dBm |
+| `overload_status` | (없음, 그대로 사용) | 0 또는 1 |
+
+---
+
+## 6. `traffic_type` → 3GPP SLA 기준값
+
+```python
+def _get_sla_thresholds(traffic_type: int) -> tuple[float, float]:
+    if traffic_type == 2:
+        return 300.0, 0.01   # eMBB-video (5QI=4)
+    if traffic_type == 3:
+        return 10.0, 0.01    # URLLC (5QI=82)
+    return 100.0, 1.0        # eMBB-voice (5QI=1), traffic_type 0/1
+
+def _get_sst_label(traffic_type: int) -> str:
+    if traffic_type == 2:
+        return "eMBB-video"
+    if traffic_type == 3:
+        return "URLLC"
+    return "eMBB-voice"
+```
+
+| `traffic_type` | 레이블 | PDB (ms) | PER (%) | 3GPP 5QI |
+|---|---|---|---|---|
+| 0, 1 | eMBB-voice | 100 ms | 1.0% | 5QI=1 |
+| 2 | eMBB-video | 300 ms | 0.01% | 5QI=4 |
+| 3 | URLLC | 10 ms | 0.01% | 5QI=82 |
+
+PDB (Packet Delay Budget): 지연 허용 상한.  
+PER (Packet Error Rate): 패킷 손실 허용 상한.
+
+---
+
+## 7. `_get_prompt_flags()` — boolean 플래그 6개
+
+소형 1B 모델은 `39.15 > 1.0` 같은 수치 비교를 신뢰할 수 없다.  
+Python rule engine이 미리 계산한 `yes/no` 플래그를 instruction에 주입해서 모델이 "읽고 복사"하도록 유도한다.
+
+```python
+def _get_prompt_flags(record: dict) -> dict[str, str]:
+    traffic_type   = int(record["traffic_type"])
+    pdb_ms, per_pct = _get_sla_thresholds(traffic_type)
+
+    latency_ms     = _restore_latency_ms(float(record["latency_ms"]))
+    loss_pct       = _restore_packet_loss_percent(float(record["packet_loss_rate_percent"]))
+    throughput_pct = _restore_throughput_percent(float(record["qos_metric_throughput"]))
+    net_util_pct   = _restore_util_percent(float(record["network_utilization_percent"]))
+    bw_util_pct    = _restore_util_percent(float(record["bandwidth_utilization_percent"]))
+    rsrp_dbm       = _restore_signal_rsrp_dbm(float(record["signal_strength_dbm"]))
+    overload       = int(record["overload_status"])
+
+    latency_exceeds_pdb     = latency_ms > pdb_ms
+    packet_loss_exceeds_per = loss_pct > per_pct
+    packet_loss_abnormal    = loss_pct >= 70.0
+    signal_critical         = rsrp_dbm < -110.0
+
+    hard_breach = (
+        latency_exceeds_pdb
+        or loss_pct > 5.0
+        or packet_loss_abnormal
+        or signal_critical
+        or (overload == 1 and net_util_pct >= 80.0
+            and (latency_ms > pdb_ms or loss_pct > per_pct))
+    )
+
+    stable_allowed = (
+        not hard_breach
+        and latency_ms <= pdb_ms
+        and loss_pct <= per_pct
+        and overload == 0
+        and net_util_pct < 80.0
+        and bw_util_pct < 80.0
+        and rsrp_dbm >= -100.0
+        and throughput_pct >= 40.0
+    )
+
+    return {
+        "latency_exceeds_pdb":     "yes" if latency_exceeds_pdb else "no",
+        "packet_loss_exceeds_per": "yes" if packet_loss_exceeds_per else "no",
+        "packet_loss_abnormal":    "yes" if packet_loss_abnormal else "no",
+        "signal_critical":         "yes" if signal_critical else "no",
+        "hard_breach":             "yes" if hard_breach else "no",
+        "stable_allowed":          "yes" if stable_allowed else "no",
+    }
+```
+
+| 플래그 | 조건 | 의미 |
+|---|---|---|
+| `latency_exceeds_pdb` | `latency_ms > pdb_ms` | 지연 SLA 위반 여부 |
+| `packet_loss_exceeds_per` | `loss_pct > per_pct` | 패킷 손실 SLA 위반 여부 |
+| `packet_loss_abnormal` | `loss_pct >= 70.0%` | 비정상 손실 (시뮬레이션 아티팩트 가능성) |
+| `signal_critical` | `rsrp_dbm < -110.0 dBm` | 서비스 불가 신호 강도 |
+| `hard_breach` | 위 4개 중 하나 OR 복합 overload | **즉시 critical 강제 집합 플래그** |
+| `stable_allowed` | 모든 위험 조건 불만족 AND 정상 범위 전부 충족 | stable 출력 허용 여부 |
+
+**`hard_breach` 구성 논리**:
+
+```
+hard_breach = (
+    latency > pdb                                    — PDB 직접 위반
+    OR loss > 5%                                     — PER을 크게 초과
+    OR loss >= 70%                                   — 비정상(시뮬레이션 아티팩트)
+    OR rsrp < -110 dBm                               — 서비스 불가 신호
+    OR (overload=1 AND net_util≥80%
+        AND (latency > pdb OR loss > per))           — 과부하+자원포화+SLA 위반 복합
+)
+```
+
+**`stable_allowed`** 는 `NOT hard_breach`의 단순 역이 아닌, 더 엄격한 전항 조건:
+
+```
+stable_allowed = (
+    NOT hard_breach
+    AND latency ≤ pdb
+    AND loss ≤ per
+    AND overload = 0
+    AND net_util < 80%
+    AND bw_util < 80%
+    AND rsrp ≥ -100 dBm
+    AND throughput ≥ 40%
+)
+```
+
+---
+
+## 8. `classify_qos_state()` — QoS 상태 분류
+
+규칙 기반 라벨 엔진. 복원된 물리 값을 SLA 기준과 직접 비교해 `critical / degraded / stable` 중 하나를 반환한다.
+
+```python
+def classify_qos_state(record: dict) -> str:
+    latency_ms     = _restore_latency_ms(float(record["latency_ms"]))
+    loss_pct       = _restore_packet_loss_percent(float(record["packet_loss_rate_percent"]))
+    throughput_pct = _restore_throughput_percent(float(record["qos_metric_throughput"]))
+    net_util_pct   = _restore_util_percent(float(record["network_utilization_percent"]))
+    bw_util_pct    = _restore_util_percent(float(record["bandwidth_utilization_percent"]))
+    rsrp_dbm       = _restore_signal_rsrp_dbm(float(record["signal_strength_dbm"]))
+    overload       = int(record["overload_status"])
+    traffic_type   = int(record["traffic_type"])
+    pdb_ms, per_pct = _get_sla_thresholds(traffic_type)
+
+    # ── critical (해당 시 즉시 반환) ──────────
+    if loss_pct >= 70.0:
+        return "critical"
+    if latency_ms > pdb_ms:
+        return "critical"
+    if loss_pct > 5.0:
+        return "critical"
+    if rsrp_dbm < -110.0:
+        return "critical"
+    if overload == 1 and net_util_pct >= 80.0 and (latency_ms > pdb_ms or loss_pct > per_pct):
+        return "critical"
+
+    # ── degraded ────────────────────────────
+    if pdb_ms * 0.8 < latency_ms <= pdb_ms:
+        return "degraded"
+    if per_pct < loss_pct < 5.0:
+        return "degraded"
+    if 80.0 <= net_util_pct < 90.0:
+        return "degraded"
+    if 80.0 <= bw_util_pct < 90.0:
+        return "degraded"
+    if overload == 1:
+        return "degraded"
+    if -110.0 <= rsrp_dbm < -100.0:
+        return "degraded"
+    if throughput_pct < 40.0:
+        return "degraded"
+
+    # ── stable ──────────────────────────────
+    if (
+        latency_ms <= pdb_ms
+        and loss_pct <= per_pct
+        and overload == 0
+        and net_util_pct < 80.0
+        and bw_util_pct < 80.0
+        and rsrp_dbm >= -100.0
+        and throughput_pct >= 40.0
+    ):
+        return "stable"
+
+    return "degraded"
+```
+
+### critical 조건 표 (우선순위 순)
+
+| 우선순위 | 조건 | 근거 |
+|---|---|---|
+| 1 | `loss_pct >= 70.0%` | 비정상 손실 — 시뮬레이션 아티팩트, 보수적 critical 처리 |
+| 2 | `latency_ms > pdb_ms` | TS 23.501 PDB 직접 위반 |
+| 3 | `loss_pct > 5.0%` | PER 기준을 크게 초과한 심각 손실 |
+| 4 | `rsrp_dbm < -110.0 dBm` | 서비스 불가 수준 신호 강도 |
+| 5 | `overload=1 AND net_util≥80% AND (latency>pdb OR loss>per)` | 과부하+자원포화+SLA 위반 복합 |
+
+### degraded 조건 표
+
+| 조건 | 근거 |
+|---|---|
+| `pdb×0.8 < latency ≤ pdb` | PDB의 80~100% 구간 — 위반 직전 경고 |
+| `per_pct < loss < 5.0%` | PER 초과이나 심각 수준 미만 |
+| `80% ≤ net_util < 90%` | 자원 포화 임박 |
+| `80% ≤ bw_util < 90%` | 대역폭 포화 임박 |
+| `overload = 1` | 과부하 플래그 (위 임계 미도달 상태) |
+| `-110 ≤ rsrp < -100 dBm` | 신호 불량 구간 |
+| `throughput < 40%` | 처리량 부족 |
+
+---
+
+## 9. `recommend_action()` — 운영 액션 생성
+
+```python
+def recommend_action(record: dict, qos_state: str) -> str:
+    # (물리 값 복원 코드 생략 — classify_qos_state()와 동일)
+
+    if loss_pct >= 70.0:
+        return "isolate the slice, validate telemetry, and reroute traffic immediately"
+    if overload == 1 and net_util_pct >= 80.0 and (latency_ms > pdb_ms or loss_pct > per_pct):
+        return "redistribute slice traffic and reduce utilization below 80 percent"
+    if latency_ms > pdb_ms:
+        return "prioritize low-latency scheduling and reduce contention"
+    if loss_pct > 5.0:
+        return "investigate radio quality and reduce packet loss with retransmission tuning"
+    if rsrp_dbm < -110.0:
+        return "trigger handover or beam management to recover signal quality"
+    if overload == 1 or net_util_pct >= 80.0 or bw_util_pct >= 80.0:
+        return "rebalance load and scale resources before SLA violation worsens"
+    if loss_pct > per_pct:
+        return "tune QoS handling to bring packet loss back within PER"
+    if -110.0 <= rsrp_dbm < -100.0:
+        return "improve RF conditions and mobility control to raise signal strength"
+    if throughput_pct < 40.0:
+        return "review scheduling and bandwidth allocation to recover throughput"
+    if qos_state == "stable":
+        return "maintain the current policy and continue KPI monitoring"
+    return "review slice resource allocation and monitor KPI trends closely"
+```
+
+| 조건 (우선순위)                      | 의미            | 운영 액션           |
+| ------------------------------ | ------------- | --------------- |
+| loss ≥ 70%                     | 네트워크 붕괴 수준 손실 | 슬라이스 격리 + 즉시 우회 |
+| overload + util ≥ 80% + SLA 위반 | 리소스 포화 상태     | 트래픽 재분배         |
+| latency > PDB                  | 지연 SLA 위반     | 저지연 스케줄링 적용     |
+| loss > 5%                      | 심각한 손실        | RF 점검 + 재전송 튜닝  |
+| RSRP < -110                    | 신호 붕괴 수준      | 핸드오버 / 빔 관리     |
+| overload or util ≥ 80%         | 과부하 전조        | 부하 분산           |
+| loss > PER                     | 경미한 SLA 위반    | QoS 정책 튜닝       |
+| -110 ≤ RSRP < -100             | 신호 저하         | RF 환경 개선        |
+| throughput < 40%               | 처리량 부족        | 스케줄링 재조정        |
+| stable                         | 정상 상태         | 유지              |
+| 기타                             | 애매한 저하        | 자원 재검토          |
+
+
+---
+
+## 10. `build_instruction()` — LLM 입력 생성
+
+`hard_breach`와 `stable_allowed`를 맨 앞에 배치해 모델이 가장 먼저 결정적 분류 단서를 보도록 한다.
+
+```python
+def build_instruction(record: dict) -> str:
+    traffic_type = int(record["traffic_type"])
+    sst_label    = _get_sst_label(traffic_type)
+    flags        = _get_prompt_flags(record)
+    overload     = int(record["overload_status"])
+
+    return (
+        f"hard_breach={flags['hard_breach']}; "
+        f"stable_allowed={flags['stable_allowed']}; "
+        f"packet_loss_abnormal={flags['packet_loss_abnormal']}; "
+        f"signal_critical={flags['signal_critical']}; "
+        f"latency_exceeds_pdb={flags['latency_exceeds_pdb']}; "
+        f"packet_loss_exceeds_per={flags['packet_loss_exceeds_per']}; "
+        f"traffic={sst_label}; "
+        f"overload={overload}"
+    )
+```
+
+---
+
+## 11. `build_expected_output()` — 정답 생성
+
+```python
+def build_expected_output(record: dict) -> str:
+    traffic_type = int(record["traffic_type"])
+    pdb_ms, per_pct = _get_sla_thresholds(traffic_type)
+    sst_label    = _get_sst_label(traffic_type)
+
+    latency_ms   = _restore_latency_ms(float(record["latency_ms"]))
+    loss_pct     = _restore_packet_loss_percent(float(record["packet_loss_rate_percent"]))
+    net_util_pct = _restore_util_percent(float(record["network_utilization_percent"]))
+    bw_util_pct  = _restore_util_percent(float(record["bandwidth_utilization_percent"]))
+    rsrp_dbm     = _restore_signal_rsrp_dbm(float(record["signal_strength_dbm"]))
+
+    qos_state = classify_qos_state(record)
+    action    = recommend_action(record, qos_state)
+
+    if loss_pct >= 70.0:
+        reason = f"packet loss {loss_pct:.1f}% is abnormal and exceeds PER {per_pct}%"
+    elif latency_ms > pdb_ms:
+        reason = f"latency {latency_ms:.1f}ms exceeds PDB {pdb_ms:.0f}ms for {sst_label}"
+    elif loss_pct > 5.0:
+        reason = f"packet loss {loss_pct:.1f}% is severely above PER {per_pct}%"
+    elif rsrp_dbm < -110.0:
+        reason = f"signal {rsrp_dbm:.1f}dBm is below the serviceable threshold"
+    elif qos_state == "degraded":
+        reason = (
+            f"near-limit KPI state: latency {latency_ms:.1f}ms, loss {loss_pct:.3f}%, "
+            f"net {net_util_pct:.1f}%, bw {bw_util_pct:.1f}%, rsrp {rsrp_dbm:.1f}dBm"
+        )
+    else:
+        reason = f"all KPI values are within normal limits for {sst_label}"
+
+    return (
+        f"QoS state: {qos_state}\n"
+        f"Reason: {reason}\n"
+        f"Action: {action}"
+    )
+```
+
+**실제 출력 예시**:
+
+```
+QoS state: critical
+Reason: latency 369.6ms exceeds PDB 100ms for eMBB-voice
+Action: prioritize low-latency scheduling and reduce contention
+```
+
+```
+QoS state: critical
+Reason: packet loss 93.9% is abnormal and exceeds PER 0.01%
+Action: isolate the slice, validate telemetry, and reroute traffic immediately
+```
+
+**Reason 우선순위**: 비정상 손실 → latency 위반 → 심각 손실 → 신호 위험 → degraded 종합 → stable 정상.
+
+---
+
+## 12. `SYSTEM_PROMPT` — 현재 코드 전문 (20개 few-shot)
+
+```python
+FEW_SHOT_EXAMPLES = """
+Example 1:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=yes; packet_loss_exceeds_per=yes; traffic=eMBB-voice; overload=0
+QoS state: critical
+Reason: latency exceeds PDB and packet loss exceeds PER for eMBB-voice
+Action: prioritize low-latency scheduling and reduce PRB contention
+
+Example 2:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=yes; signal_critical=no; latency_exceeds_pdb=no; packet_loss_exceeds_per=yes; traffic=eMBB-video; overload=1
+QoS state: critical
+Reason: packet loss is abnormal and exceeds PER for eMBB-video
+Action: isolate the slice, validate telemetry, and reroute traffic immediately
+
+Example 3:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=no; signal_critical=yes; latency_exceeds_pdb=no; packet_loss_exceeds_per=no; traffic=URLLC; overload=0
+QoS state: critical
+Reason: signal is below the serviceable threshold for URLLC
+Action: trigger handover or beam management to recover signal quality
+
+Example 4:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=yes; packet_loss_exceeds_per=no; traffic=URLLC; overload=1
+QoS state: critical
+Reason: latency exceeds PDB for URLLC
+Action: prioritize low-latency scheduling and reduce contention
+
+Example 5:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=no; packet_loss_exceeds_per=yes; traffic=eMBB-video; overload=0
+QoS state: critical
+Reason: packet loss exceeds PER for eMBB-video
+Action: investigate radio quality and reduce packet loss with retransmission tuning
+
+Example 6:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=yes; signal_critical=no; latency_exceeds_pdb=yes; packet_loss_exceeds_per=yes; traffic=URLLC; overload=1
+QoS state: critical
+Reason: both latency and abnormal packet loss indicate severe SLA violation for URLLC
+Action: isolate the slice, validate telemetry, and reroute traffic immediately
+
+Example 7:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=yes; packet_loss_exceeds_per=yes; traffic=eMBB-video; overload=0
+QoS state: critical
+Reason: latency exceeds PDB and packet loss exceeds PER for eMBB-video
+Action: prioritize low-latency scheduling and reduce contention
+
+Example 8:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=no; packet_loss_exceeds_per=yes; traffic=eMBB-voice; overload=1
+QoS state: critical
+Reason: packet loss exceeds PER for eMBB-voice
+Action: investigate radio quality and reduce packet loss with retransmission tuning
+
+Example 9:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=no; signal_critical=yes; latency_exceeds_pdb=yes; packet_loss_exceeds_per=yes; traffic=eMBB-video; overload=1
+QoS state: critical
+Reason: multiple critical breaches are present for eMBB-video
+Action: redistribute slice traffic and reduce utilization below 80 percent
+
+Example 10:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=yes; packet_loss_exceeds_per=yes; traffic=eMBB-voice; overload=1
+QoS state: critical
+Reason: latency exceeds PDB and packet loss exceeds PER for eMBB-voice
+Action: prioritize low-latency scheduling and reduce PRB contention
+
+Example 11:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=yes; signal_critical=no; latency_exceeds_pdb=no; packet_loss_exceeds_per=yes; traffic=eMBB-voice; overload=1
+QoS state: critical
+Reason: abnormal packet loss indicates a severe SLA violation for eMBB-voice
+Action: isolate the slice, validate telemetry, and reroute traffic immediately
+
+Example 12:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=yes; packet_loss_exceeds_per=yes; traffic=URLLC; overload=0
+QoS state: critical
+Reason: latency exceeds PDB and packet loss exceeds PER for URLLC
+Action: prioritize low-latency scheduling and reduce contention
+
+Example 13:
+hard_breach=no; stable_allowed=no; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=no; packet_loss_exceeds_per=no; traffic=eMBB-voice; overload=1
+QoS state: degraded
+Reason: overload is present without a critical breach for eMBB-voice
+Action: rebalance load and monitor KPI trends closely
+
+Example 14:
+hard_breach=no; stable_allowed=no; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=no; packet_loss_exceeds_per=no; traffic=eMBB-video; overload=1
+QoS state: degraded
+Reason: overload is present without a critical breach for eMBB-video
+Action: rebalance load and monitor KPI trends closely
+
+Example 15:
+hard_breach=no; stable_allowed=no; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=no; packet_loss_exceeds_per=no; traffic=URLLC; overload=1
+QoS state: degraded
+Reason: overload is present without a critical breach for URLLC
+Action: rebalance load and monitor KPI trends closely
+
+Example 16:
+hard_breach=no; stable_allowed=no; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=no; packet_loss_exceeds_per=no; traffic=eMBB-voice; overload=0
+QoS state: degraded
+Reason: KPI state is near the warning range for eMBB-voice
+Action: monitor KPI drift and prepare preventive load balancing
+
+Example 17:
+hard_breach=no; stable_allowed=yes; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=no; packet_loss_exceeds_per=no; traffic=eMBB-voice; overload=0
+QoS state: stable
+Reason: all KPI values are within normal limits for eMBB-voice
+Action: maintain current slice policy and continue KPI monitoring
+
+Example 18:
+hard_breach=no; stable_allowed=yes; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=no; packet_loss_exceeds_per=no; traffic=eMBB-video; overload=0
+QoS state: stable
+Reason: all KPI values are within normal limits for eMBB-video
+Action: maintain current slice policy and continue KPI monitoring
+
+Example 19:
+hard_breach=no; stable_allowed=yes; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=no; packet_loss_exceeds_per=no; traffic=URLLC; overload=0
+QoS state: stable
+Reason: all KPI values are within normal limits for URLLC
+Action: maintain current slice policy and continue KPI monitoring
+
+Example 20:
+hard_breach=yes; stable_allowed=no; packet_loss_abnormal=no; signal_critical=no; latency_exceeds_pdb=no; packet_loss_exceeds_per=yes; traffic=URLLC; overload=1
+QoS state: critical
+Reason: packet loss exceeds PER for URLLC
+Action: investigate radio quality and reduce packet loss with retransmission tuning
+""".strip()
+
+SYSTEM_PROMPT = f"""Classify the 6G network slice QoS state using only the provided flags.
+Return exactly 3 lines and nothing else:
+QoS state: <stable|degraded|critical>
+Reason: <one sentence>
+Action: <one sentence>
+
+Mandatory rules:
+- If hard_breach=yes, you must output exactly: QoS state: critical
+- Never output degraded when hard_breach=yes
+- Never output stable when hard_breach=yes
+- If packet_loss_abnormal=yes, QoS state must be critical
+- If signal_critical=yes, QoS state must be critical
+- If stable_allowed=yes, QoS state must be stable
+- Otherwise, QoS state must be degraded
+
+First decide the QoS state only from the rules.
+Then write Reason and Action consistent with that state.
+
+{FEW_SHOT_EXAMPLES}
+"""
+```
+
+**SYSTEM_PROMPT 구성 요소 설명**:
+
+| 요소 | 내용 | 의도 |
+|---|---|---|
+| 출력 형식 선언 | `Return exactly 3 lines` | 3줄 고정 구조 강제 |
+| Mandatory rules | `hard_breach=yes → critical` 등 7개 명시 규칙 | 소형 모델이 플래그를 무시하는 경향 방지 |
+| `First decide... Then write...` | 2단계 생성 지시 | 분류 결정 → Reason/Action 순서 명시 |
+| 20개 few-shot examples | critical 13개 + degraded 4개 + stable 3개 | 레이블별 다양한 케이스 패턴 주입 |
+
+**few-shot 구성비**:
+
+| 레이블 | 개수 | 비율 |
+|---|---|---|
+| critical | 13개 (Ex 1~12, 20) | 65% |
+| degraded | 4개 (Ex 13~16) | 20% |
+| stable | 3개 (Ex 17~19) | 15% |
+
+---
+
+## 13. JSONL 파일 구조 및 실제 샘플
+
+**파일 위치**: `jetson_slm_stack/dataset/prepared/network_slicing_qos/`
+
+| 파일 | 샘플 수 | 용도 |
+|---|---|---|
+| `train.jsonl` | 400건 | 파인튜닝 학습용 |
+| `val.jsonl` | 50건 | 학습 중 과적합 모니터링용 |
+| `test.jsonl` | 50건 | 최종 성능 평가용 (`test_dataset.sh`에서 사용) |
+| `manifest.prep.json` | — | 데이터셋 메타정보 (CSV 경로·컬럼·split 비율·생성 시각 등) |
+| `csv_schema.json` | — | 원본 컬럼 → 정규화 키 매핑 |
+| `csv_preview.json` | — | 첫 5행 미리보기 |
+
+**JSONL 1줄 실제 구조**:
+
+```json
+{
+  "id": "network-slicing-00009",
+  "domain": "network_slicing_qos",
+  "system": "<SYSTEM_PROMPT — 20개 few-shot 포함>",
+  "instruction": "traffic=eMBB-voice; overload=0; latency_exceeds_pdb=yes; packet_loss_exceeds_per=yes; packet_loss_abnormal=no; signal_critical=no; hard_breach=yes; stable_allowed=no",
+  "input": "",
+  "output": "QoS state: critical\nReason: latency 369.6ms exceeds PDB 100ms for eMBB-voice\nAction: prioritize low-latency scheduling and reduce contention",
+  "metadata": {
+    "network_slice_id": "...",
+    "timestamp": "...",
+    "device_id": "...",
+    "traffic_type": 0,
+    "network_utilization_percent": 0.742,
+    "latency_ms": 0.737,
+    "packet_loss_rate_percent": 0.369,
+    "signal_strength_dbm": 0.483,
+    "bandwidth_utilization_percent": 0.651,
+    "qos_metric_throughput": 0.612,
+    "overload_status": 0
+  }
+}
+```
+
+**실제 test.jsonl 샘플 3건 (head 확인 결과)**:
+
+| id | instruction (요약) | expected output (첫 줄) |
+|---|---|---|
+| network-slicing-00009 | traffic=eMBB-voice; overload=0; ...; hard_breach=yes; stable_allowed=no | QoS state: critical |
+| network-slicing-00019 | traffic=eMBB-video; overload=1; packet_loss_abnormal=yes; hard_breach=yes | QoS state: critical |
+| network-slicing-00029 | traffic=eMBB-voice; overload=1; latency_exceeds_pdb=yes; hard_breach=yes | QoS state: critical |
+
+---
+
+## 14. Split 정책 및 생성 결과
+
+```python
+SPLIT_RULE = {"train": 8, "val": 1, "test": 1}
+MAX_SAMPLES = 50   # 전체 처리 제한
+
+def choose_split(index: int) -> str:
+    bucket = index % 10
+    if bucket < SPLIT_RULE["train"]:      return "train"  # 0~7
+    if bucket < SPLIT_RULE["train"] + SPLIT_RULE["val"]: return "val"   # 8
+    return "test"                                                         # 9
+```
+
+**실제 split 결과** (`manifest.prep.json` 기록):
+
+| split | index % 10 | 샘플 수 |
+|---|---|---|
+| train | 0 ~ 7 | **400건** |
+| val | 8 | **50건** |
+| test | 9 | **50건** |
+| 합계 | — | **500건** |
+
+> `MAX_SAMPLES = 50` 설정에도 불구하고 500건이 생성되었다.  
+> 코드 내 `if total >= MAX_SAMPLES: break` 조건이 실제로는 동작하지 않은 것으로 보인다.
+
+**deterministic 분할 특성**:
+- 동일 CSV + 동일 row 순서 → 항상 동일한 split 결과
+- 무작위 분할 대비 재현성·디버깅·비교 실험에 유리
+- **한계**: row 순서가 편향되어 있으면 그 편향이 split에 그대로 전파됨
+
+---
+
+## 15. 평가 환경 구성
+
+### `.env` (jetson_slm_stack/.env) 핵심 설정
+
+```ini
+# 디바이스 / 정밀도
+DEVICE=cuda
+DTYPE=float16
+GPU_OFFLOAD_ENABLED=1
+GPU_TARGET_MEMORY_MB=896
+GPU_MEMORY_RESERVE_MB=768
+
+# 토큰 한도
+MAX_INPUT_TOKENS=448
+MAX_NEW_TOKENS=256
+
+# 생성 파라미터
+TEMPERATURE=0.1
+TOP_P=0.9
+TOP_K=30
+REPETITION_PENALTY=1.10
+
+# 기타
+ENABLE_WARMUP=1
+PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128,garbage_collection_threshold:0.8
+```
+
+### `test_dataset.sh` 실행 방법
+
+```bash
+# test split 전체 평가
+bash test_dataset.sh llama --api chat --split test
+
+# 최대 30건
+bash test_dataset.sh llama --api chat --split test --max 30
+
+# val split 검증
+bash test_dataset.sh llama --api chat --split val
+```
+
+채팅 API 호출 시 SYSTEM_PROMPT + 2개 few-shot 메시지가 `messages` 배열로 구성되어 전송된다.  
+`stop: ["Example ", "\n\n\n"]` 토큰으로 모델이 few-shot 패턴을 무한 반복하는 현상을 차단한다.
+
+---
+
+## 16. 평가 결과 — 2026-03-29 (test split 30건)
+
+**실행 명령**:
+```bash
+bash test_dataset.sh llama --split test --api chat --max 30
+```
+
+**결과 파일**: `test_slm_output/dataset_eval_llama_test_20260329_220708.jsonl`
+
+### 16-1. 정확도 요약
+
+| 항목 | 값 |
+|---|---|
+| 평가 샘플 수 | **30건** |
+| 기대 레이블 분포 | critical: 30개 (100%) |
+| 모델 출력 분포 | **degraded: 30개 (100%)** |
+| **QoS state 정확도** | **0 / 30 = 0.0%** |
+
+### 16-2. 성능 지표
+
+| 지표 | 평균값 |
+|---|---|
+| `prompt_tokens` | **508 tokens** |
+| `completion_tokens` | **34 tokens** |
+| `latency_sec` | **53.6 sec/req** |
+| `tokens_per_sec` | **0.635 tok/s** |
+
+### 16-3. 샘플별 상세 (3건)
+
+**Sample 1 — network-slicing-00009**
+
+```
+instruction  traffic=eMBB-voice; overload=0; latency_exceeds_pdb=yes; packet_loss_exceeds_per=yes;
+             packet_loss_abnormal=no; signal_critical=no; hard_breach=yes; stable_allowed=no
+
+expected     QoS state: critical
+             Reason: latency 369.6ms exceeds PDB 100ms for eMBB-voice
+             Action: prioritize low-latency scheduling and reduce contention
+
+generated    QoS state: degraded
+             Reason: latency exceeds PDB and packet loss exceeds PER for eMBB-voice
+             Action: reduce PRB contention to improve low-latency
+
+metrics      prompt_tokens=508, completion_tokens=36, latency=53.9s, tps=0.668
+```
+
+**Sample 2 — network-slicing-00019**
+
+```
+instruction  traffic=eMBB-video; overload=1; latency_exceeds_pdb=no; packet_loss_exceeds_per=yes;
+             packet_loss_abnormal=yes; signal_critical=no; hard_breach=yes; stable_allowed=no
+
+expected     QoS state: critical
+             Reason: packet loss 93.9% is abnormal and exceeds PER 0.01%
+             Action: isolate the slice, validate telemetry, and reroute traffic immediately
+
+generated    QoS state: degraded
+             Reason: latency exceeds PDB and packet loss exceeds PER for eMBB-video
+             Action: reduce PRB contention and increase buffer size
+
+metrics      prompt_tokens=507, completion_tokens=34, latency=53.3s, tps=0.638
+```
+
+**Sample 3 — network-slicing-00029**
+
+```
+instruction  traffic=eMBB-voice; overload=1; latency_exceeds_pdb=yes; packet_loss_exceeds_per=yes;
+             packet_loss_abnormal=no; signal_critical=no; hard_breach=yes; stable_allowed=no
+
+expected     QoS state: critical
+             Reason: latency 338.0ms exceeds PDB 100ms for eMBB-voice
+             Action: prioritize low-latency scheduling and reduce contention
+
+generated    QoS state: degraded
+             Reason: latency exceeds PDB and packet loss exceeds PER for eMBB-voice
+             Action: prioritize low-latency scheduling and reduce contention
+
+metrics      prompt_tokens=507, completion_tokens=30, latency=53.6s, tps=0.560
+```
+
+---
+
+## 17. 실패 원인 분석
+
+### 17-1. 핵심 증상
+
+- 30개 전부 `QoS state: degraded` 출력 — `hard_breach=yes`를 완전히 무시
+- `Reason` 문장은 few-shot 예시와 유사하게 생성 → **출력 형식 자체는 올바름**
+- `Action` 일부는 정답과 일치 → QoS **레이블 결정만** 실패
+
+### 17-2. 원인 1 — instruction 포맷과 few-shot 포맷 불일치 (가장 유력한 원인)
+
+| 구분 | 필드 순서 |
+|---|---|
+| 현재 JSONL `instruction` (평가 시 실제 입력) | `traffic=...; overload=...; ...; hard_breach=...; stable_allowed=...` ← **traffic 선두, hard_breach 후미** |
+| SYSTEM_PROMPT `FEW_SHOT_EXAMPLES` | `hard_breach=...; stable_allowed=...; ...; traffic=...; overload=...` ← **hard_breach 선두** |
+
+모델이 few-shot에서 학습한 "hard_breach=yes → 첫 번째 키 → QoS state: critical" 연결 고리가  
+실제 입력(hard_breach가 7번째 키)에서는 위치적으로 동작하지 않는다.  
+→ **JSONL 재생성 후 재평가 필요**
+
+### 17-3. 원인 2 — prompt_tokens 제한 초과
+
+`.env`의 `MAX_INPUT_TOKENS = 448`인데 실제 `prompt_tokens = 508`으로 초과되었다.  
+서버가 입력을 truncate할 경우 few-shot 예시 일부가 잘려 모델이 규칙을 온전히 전달받지 못했을 가능성이 있다.
+
+### 17-4. 원인 3 — 1B 모델의 명령 추종 한계
+
+1B 규모 모델은 "Mandatory rules: hard_breach=yes → critical" 같은 텍스트 지시를  
+prior next-token probability 앞에서 억제하지 못하는 경향이 있다.  
+즉, few-shot 패턴이 `degraded`로 수렴되면 규칙을 무시하고 degraded를 출력한다.
+
+### 17-5. 속도 이슈
+
+| 지표 | 값 | 기대값 |
+|---|---|---|
+| 평균 latency | 53.6 sec/req | DGX 기준 1~5 sec 예상 |
+| tokens_per_sec | 0.635 tok/s | DGX 기준 50~100+ tok/s 예상 |
+
+→ GPU offload 혹은 float16 전환 비용이 과도함. DEVICE/DTYPE 설정 재확인 필요.
+
+---
+
+## 18. 개선해야 할 방향
+
+| 우선순위 | 개선 항목 | 구체적 조치 |
+|---|---|---|
+| 🔴 즉시 | **MAX_INPUT_TOKENS 상향** | `.env` → `MAX_INPUT_TOKENS=600` (현재 508 토큰 초과 상태) |
+| 🟡 단기 | **few-shot 수 축소** | 20개 → 6개 (critical×3, degraded×2, stable×1). prompt_tokens 절반 이하로 |
+| 🟡 단기 | **`qos_state_hint` 플래그 추가** | instruction에 `qos_state_hint=critical` 직접 포함 → 모델이 레이블을 "읽기"만 하면 됨 |
+| 🟠 중기 | **LoRA fine-tuning** | 500건 데이터로 PEFT 적용 → critical/degraded/stable 레이블 추종률 개선 |
+| 🟠 중기 | **Rule-engine 하이브리드** | QoS state 결정은 Python rule engine이 강제, LLM은 Reason/Action 설명 전용으로 분리 |
+
+---
+
+## 19. 전체 JSONL 변수 흐름 요약
+
+```
+원본 CSV row (2345 rows 중 최대 500 처리)
+    │
+    ▼
+slugify_column()
+    → 원본 헤더 → snake_case 정규화 키 변환 맵
+    │
+    ▼
+normalize_row()
+    → row dict의 key를 정규화 키로 치환
+    │
+    ▼
+build_record()
+    → 허용 KPI만 선별 + coerce_float / coerce_int
+    → record (KPI 7개는 0~1 정규화, overload_status는 0/1 그대로)
+    │
+    ├─→ build_instruction()
+    │       ├─ _restore_*()              정규화 값 → 물리 값
+    │       ├─ _get_sla_thresholds()     traffic_type → PDB / PER
+    │       └─ _get_prompt_flags()       물리 값 기준 boolean 플래그 6개 계산
+    │           → "hard_breach=yes; stable_allowed=no; ...; traffic=eMBB-voice; overload=0"
+    │
+    └─→ build_expected_output()
+            ├─ classify_qos_state()      물리 값 + PDB/PER → critical/degraded/stable
+            ├─ recommend_action()        QoS state + KPI → 한 문장 액션
+            └─ reason 문장 조합 (우선순위 기반)
+                → "QoS state: critical\nReason: ...\nAction: ..."
+
+최종 JSONL 샘플 구조:
+{
+  "id":          "network-slicing-NNNNN",
+  "domain":      "network_slicing_qos",
+  "system":      "<SYSTEM_PROMPT — 20개 few-shot 포함>",
+  "instruction": "hard_breach=yes; stable_allowed=no; ...; traffic=eMBB-voice; overload=0",
+  "input":       "",
+  "output":      "QoS state: critical\nReason: ...\nAction: ...",
+  "metadata":    { ...record (0~1 정규화 값)... }
+}
+```
+
+---

@@ -31,7 +31,7 @@ if [[ "$MODEL_TYPE" != "llama" && "$MODEL_TYPE" != "deepseek" && "$MODEL_TYPE" !
 fi
 shift
 
-MAX_SAMPLES=0
+MAX_SAMPLES=10
 API_MODE="chat"
 SPLIT="test"
 RESUME_FILE=""
@@ -130,6 +130,28 @@ TEST_MAX_NEW_TOKENS=$(read_env MAX_NEW_TOKENS); TEST_MAX_NEW_TOKENS=${TEST_MAX_N
 TEST_TEMPERATURE=$(read_env TEMPERATURE);       TEST_TEMPERATURE=${TEST_TEMPERATURE:-0.0}
 TEST_TOP_P=$(read_env TOP_P);                   TEST_TOP_P=${TEST_TOP_P:-0.9}
 
+is_json() {
+    local input="$1"
+    jq -e . >/dev/null 2>&1 <<< "$input"
+}
+
+json_read() {
+    local body="$1"
+    local filter="$2"
+    local fallback="$3"
+    if is_json "$body"; then
+        echo "$body" | jq -r --arg fallback "$fallback" "$filter // \$fallback"
+    else
+        echo "$fallback"
+    fi
+}
+
+if [[ "$API_MODE" == "chat" ]]; then
+    EFFECTIVE_MAX_NEW_TOKENS=256
+else
+    EFFECTIVE_MAX_NEW_TOKENS=$TEST_MAX_NEW_TOKENS
+fi
+
 API_PATH="$([[ "$API_MODE" == "chat" ]] && echo "v1/chat/completions" || echo "generate")"
 
 # ── 서버 상태 확인 ─────────────────────────────────────────────────────────────
@@ -137,7 +159,7 @@ echo ""
 echo "════════════════════════════════════════════════"
 echo "  Dataset Evaluation: $MODEL_TYPE  (port $PORT)"
 echo "  Split: $SPLIT   API: /$API_PATH"
-echo "  temperature=$TEST_TEMPERATURE  max_new_tokens=$TEST_MAX_NEW_TOKENS  top_p=$TEST_TOP_P"
+echo "  temperature=$TEST_TEMPERATURE  max_new_tokens=$EFFECTIVE_MAX_NEW_TOKENS  top_p=$TEST_TOP_P"
 echo "════════════════════════════════════════════════"
 
 if ! curl -sf "http://localhost:$PORT/healthz" > /dev/null 2>&1; then
@@ -208,10 +230,28 @@ while IFS= read -r line; do
     fi
     [[ $IDX -ge $N_SAMPLES ]] && break
 
+    # 빈 줄이나 공백 줄은 샘플로 취급하지 않는다.
+    if [[ -z "${line//[[:space:]]/}" ]]; then
+        echo "[WARN] skip empty source line: $SOURCE_IDX"
+        continue
+    fi
+
+    # JSONL이 깨진 경우 빈 id/빈 instruction 레코드를 만들지 않고 건너뛴다.
+    if ! jq -e . >/dev/null 2>&1 <<< "$line"; then
+        echo "[WARN] skip malformed JSON source line: $SOURCE_IDX"
+        continue
+    fi
+
     ID=$(          echo "$line" | jq -r '.id          // "unknown"')
     INSTRUCTION=$( echo "$line" | jq -r '.instruction // ""')
     INPUT=$(       echo "$line" | jq -r '.input       // ""')
     EXPECTED=$(    echo "$line" | jq -r '.output      // ""')
+    SYSTEM=$(      echo "$line" | jq -r '.system      // ""')
+
+    if [[ -z "$ID" || -z "$INSTRUCTION" ]]; then
+        echo "[WARN] skip incomplete sample at source line $SOURCE_IDX (id/instruction missing)"
+        continue
+    fi
 
     FULL_PROMPT="$INSTRUCTION"
     if [[ -n "$INPUT" ]]; then
@@ -221,54 +261,100 @@ Input: $INPUT"
     fi
 
     IDX=$((IDX + 1))
-    printf "[%3d/%d] %-42s " "$IDX" "$N_SAMPLES" "$ID"
+    printf "[%s][%3d/%d] %-42s " "$(date +%H:%M:%S)" "$IDX" "$N_SAMPLES" "$ID"
 
     # API 호출
     if [[ "$API_MODE" == "chat" ]]; then
+        # few-shot 2쌍: 새 flags-only instruction 포맷 + 3줄 응답 패턴
+        FS_USER1="traffic=eMBB-voice; overload=0; latency_exceeds_pdb=yes; packet_loss_exceeds_per=yes; packet_loss_abnormal=no; signal_critical=no; hard_breach=yes; stable_allowed=no"
+        FS_ASS1="QoS state: critical\nReason: latency exceeds PDB and packet loss exceeds PER for eMBB-voice\nAction: prioritize low-latency scheduling and reduce PRB contention"
+        FS_USER2="traffic=URLLC; overload=0; latency_exceeds_pdb=no; packet_loss_exceeds_per=no; packet_loss_abnormal=no; signal_critical=no; hard_breach=no; stable_allowed=yes"
+        FS_ASS2="QoS state: stable\nReason: all KPI values are within normal limits for URLLC\nAction: maintain current slice policy and continue KPI monitoring"
+
+        if [[ -n "$SYSTEM" ]]; then
+            MSG_JSON=$(jq -n \
+                --arg s    "$SYSTEM" \
+                --arg fu1  "$FS_USER1" \
+                --arg fa1  "$FS_ASS1" \
+                --arg fu2  "$FS_USER2" \
+                --arg fa2  "$FS_ASS2" \
+                --arg u    "$FULL_PROMPT" \
+                '[{role:"system",content:$s},
+                  {role:"user",content:$fu1},{role:"assistant",content:$fa1},
+                  {role:"user",content:$fu2},{role:"assistant",content:$fa2},
+                  {role:"user",content:$u}]')
+        else
+            MSG_JSON=$(jq -n \
+                --arg u "$FULL_PROMPT" \
+                '[{role:"user",content:$u}]')
+        fi
+
         PAYLOAD=$(jq -n \
-            --arg     content        "$FULL_PROMPT" \
-            --argjson max_new_tokens "$TEST_MAX_NEW_TOKENS" \
-            --argjson temperature    "$TEST_TEMPERATURE" \
+            --argjson messages       "$MSG_JSON" \
+            --argjson max_new_tokens "$EFFECTIVE_MAX_NEW_TOKENS" \
+            --argjson temperature    0.0 \
             --argjson top_p          "$TEST_TOP_P" \
-            '{messages: [{role: "user", content: $content}],
+            '{messages: $messages,
               max_new_tokens: $max_new_tokens,
               temperature: $temperature,
-              top_p: $top_p}')
-        RESP=$(curl -s -X POST "http://localhost:$PORT/v1/chat/completions" \
+              top_p: $top_p,
+              stop: ["Example ", "\n\n\n"]}')
+        RESP=$(curl -sS -X POST "http://localhost:$PORT/v1/chat/completions" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD" || echo '{}')
-        GENERATED=$(echo "$RESP" | jq -r '.choices[0].message.content // ""')
-        PROMPT_T=$( echo "$RESP" | jq -r '.usage.prompt_tokens         // 0')
-        COMP_T=$(   echo "$RESP" | jq -r '.usage.completion_tokens     // 0')
-        LATENCY=$(  echo "$RESP" | jq -r '.latency_sec                 // 0')
-        TPS=$(      echo "$RESP" | jq -r '.tokens_per_sec              // 0')
+            -d "$PAYLOAD" || echo '__CURL_FAILED__')
+        if is_json "$RESP"; then
+            GENERATED=$(json_read "$RESP" '.choices[0].message.content' '')
+            PROMPT_T=$( json_read "$RESP" '.usage.prompt_tokens' '0')
+            COMP_T=$(   json_read "$RESP" '.usage.completion_tokens' '0')
+            LATENCY=$(  json_read "$RESP" '.latency_sec' '0')
+            TPS=$(      json_read "$RESP" '.tokens_per_sec' '0')
+        else
+            GENERATED=""
+            PROMPT_T=0
+            COMP_T=0
+            LATENCY=0
+            TPS=0
+        fi
     else
         PAYLOAD=$(jq -n \
             --arg     prompt         "$FULL_PROMPT" \
-            --argjson max_new_tokens "$TEST_MAX_NEW_TOKENS" \
+            --argjson max_new_tokens "$EFFECTIVE_MAX_NEW_TOKENS" \
             --argjson temperature    "$TEST_TEMPERATURE" \
             --argjson top_p          "$TEST_TOP_P" \
             '{prompt: $prompt,
               max_new_tokens: $max_new_tokens,
               temperature: $temperature,
               top_p: $top_p}')
-        RESP=$(curl -s -X POST "http://localhost:$PORT/generate" \
+        RESP=$(curl -sS -X POST "http://localhost:$PORT/generate" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD" || echo '{}')
-        GENERATED=$(echo "$RESP" | jq -r '.generated_text  // ""')
-        PROMPT_T=$( echo "$RESP" | jq -r '.prompt_tokens   // 0')
-        COMP_T=$(   echo "$RESP" | jq -r '.completion_tokens // 0')
-        LATENCY=$(  echo "$RESP" | jq -r '.latency_sec      // 0')
-        TPS=$(      echo "$RESP" | jq -r '.tokens_per_sec   // 0')
+            -d "$PAYLOAD" || echo '__CURL_FAILED__')
+        if is_json "$RESP"; then
+            GENERATED=$(json_read "$RESP" '.generated_text' '')
+            PROMPT_T=$( json_read "$RESP" '.prompt_tokens' '0')
+            COMP_T=$(   json_read "$RESP" '.completion_tokens' '0')
+            LATENCY=$(  json_read "$RESP" '.latency_sec' '0')
+            TPS=$(      json_read "$RESP" '.tokens_per_sec' '0')
+        else
+            GENERATED=""
+            PROMPT_T=0
+            COMP_T=0
+            LATENCY=0
+            TPS=0
+        fi
     fi
 
     if [[ -z "$GENERATED" || "$GENERATED" == "null" ]]; then
         echo "FAIL"
         SESSION_FAIL=$((SESSION_FAIL + 1))
+        if is_json "$RESP"; then
+            ERROR_MSG=$(json_read "$RESP" '.detail // .error' 'empty response')
+        else
+            ERROR_MSG="$RESP"
+        fi
         jq -nc \
             --arg id     "$ID" \
             --arg status "fail" \
-            --arg error  "$(echo "$RESP" | jq -r '.detail // .error // "empty response"')" \
+            --arg error  "$ERROR_MSG" \
             '{id: $id, status: $status, error: $error}' >> "$OUT_FILE"
         continue
     fi
@@ -355,7 +441,7 @@ printf "  %-32s %s\n"    "Model:"                  "$MODEL_ID_VAL"
 printf "  %-32s %s\n"    "Split:"                  "$SPLIT"
 printf "  %-32s %s\n"    "API Mode:"               "$API_MODE"
 printf "  %-32s %s\n"    "Temperature:"            "$TEST_TEMPERATURE"
-printf "  %-32s %s\n"    "Max New Tokens:"         "$TEST_MAX_NEW_TOKENS"
+printf "  %-32s %s\n"    "Max New Tokens:"         "$EFFECTIVE_MAX_NEW_TOKENS"
 printf "  %-32s %d\n"    "Previously Completed:"   "$RESUME_SKIP"
 printf "  %-32s %d\n"    "Session Success:"        "$SESSION_SUCCESS"
 printf "  %-32s %d\n"    "Session Failed:"         "$SESSION_FAIL"
