@@ -708,6 +708,45 @@ Then write Reason and Action consistent with that state.
 | network-slicing-00019 | traffic=eMBB-video; overload=1; packet_loss_abnormal=yes; hard_breach=yes | QoS state: critical |
 | network-slicing-00029 | traffic=eMBB-voice; overload=1; latency_exceeds_pdb=yes; hard_breach=yes | QoS state: critical |
 
+## Input 지표 정의 및 판정 메커니즘  
+
+### 1. 주요 입력 지표 (Input Features)
+각 지표는 네트워크의 현재 상태를 결정하는 핵심 성능 지표(KPI)입니다.
+
+* **`hard_breach` (SLA 위반 여부)**
+    * 서비스 수준 협약(SLA)이 완전히 깨졌는지 나타내는 가장 핵심 지표 (yes/no)
+* **`stable_allowed` (안정 유지 가능성)**
+    * 현재 시스템이 안정(Stable) 상태를 유지할 수 있는 환경인지 여부 (yes/no)
+* **`packet_loss_abnormal` (비정상 패킷 손실)**
+    * 단순 부하가 아닌 하드웨어/시스템 오류로 인한 돌발적 유실 여부 (yes/no)
+* **`signal_critical` (신호 품질 위기)**
+    * 무선 신호 세기가 서비스 가능 임계값 미만으로 저하되었는지 여부 (yes/no)
+* **`latency_exceeds_pdb` (지연 시간 초과)**
+    * 허용 지연 시간(PDB, Packet Delay Budget)을 초과했는지 여부 (yes/no)
+* **`packet_loss_exceeds_per` (패킷 오류율 초과)**
+    * 허용 패킷 오류율(PER, Packet Error Rate)을 초과했는지 여부 (yes/no)
+* **`traffic` (서비스 유형)**
+    * 트래픽의 종류 및 요구사항 (eMBB-voice, eMBB-video, URLLC 등)
+* **`overload` (시스템 과부하)**
+    * 자원 사용량이 임계치를 넘었는지 나타내는 상태 값 (1: 과부하, 0: 정상)
+
+### 2. 상태 판정 로직 요약 (Logic Summary)
+
+* **🔴 Critical (심각)**
+    * `hard_breach=yes` 상태가 기반이 됨
+    * 지연(`latency`), 손실(`packet_loss`), 신호(`signal`) 중 하나라도 `yes`일 때 판정
+* **🟡 Degraded (저하)**
+    * `hard_breach=no` 이지만 `overload=1`이거나 지표가 불안정할 때 판정
+* **🟢 Stable (안정)**
+    * `hard_breach=no` 이며 모든 KPI가 정상 범위 내에 있을 때 판정
+
+
+### 3. 상황별 대응 프로세스 (Action Flow)
+1.  **지연 문제 발생 시:** 저지연 스케줄링 우선순위 부여 및 PRB 경합 완화
+2.  **신호 불량 발생 시:** 핸드오버(Handover) 또는 빔 관리(Beam Management) 실행
+3.  **시스템 오류 발생 시:** 슬라이스 격리(Isolate), 텔레메트리 검증 및 트래픽 우회
+4.  **단순 과부하 발생 시:** 부하 재분산(Load Balancing) 및 가동률 80% 이하 유지
+   
 ---
 
 ## 14. Split 정책 및 생성 결과
