@@ -870,6 +870,53 @@ metrics      prompt_tokens=332, completion_tokens=34, latency=20.864s, tps=1.630
 
 ---
 
+## A. Few-shot
+### 🚀 Few-Shot 판정 가이드라인
+
+### 1. 핵심 판정 로직 (Logic)
+AI 모델의 상태 분류 및 대응을 위한 3대 핵심 규칙입니다.
+
+* **🔴 Critical (심각)**
+  - 조건: `hard_breach=yes` (SLA 위반 발생)
+  - 트리거: 지연(PDB), 손실(PER), 신호(Signal) 중 1개 이상 지표 미달 시
+* **🟡 Degraded (저하)**
+  - 조건: `hard_breach=no` (치명적 위반 없음)
+  - 트리거: 시스템 과부하(`overload=1`) 또는 KPI 지표가 경고 범위에 근접 시
+* **🟢 Stable (안정)**
+  - 조건: `hard_breach=no` 및 모든 KPI 수치가 정상 범위 내 존재
+  - 트리거: 안정적 운영 환경(`stable_allowed=yes`) 확보 시
+
+---
+
+### 2. 주요 Few-Shot 예시 (Examples)
+
+#### **[Ex 1] 복합 장애 상황 (Critical)**
+* **Input:** `hard_breach=yes; latency_exceeds_pdb=yes; packet_loss_exceeds_per=yes; traffic=eMBB-voice`
+* **QoS State:** **심각 (Critical)**
+* **Reason:** eMBB-voice 지연 시간(PDB) 및 패킷 손실(PER) 허용치 초과
+* **Action:** 저지연 스케줄링 우선순위 상향 및 PRB 자원 경합 완화
+
+#### **[Ex 13] 과부하 발생 상황 (Degraded)**
+* **Input:** `hard_breach=no; stable_allowed=no; overload=1; traffic=eMBB-voice`
+* **QoS State:** **저하 (Degraded)**
+* **Reason:** 치명적 위반은 없으나 시스템 과부하 발생
+* **Action:** 부하 재분산(Load Balancing) 및 KPI 추이 정밀 모니터링
+
+#### **[Ex 17] 정상 운영 상황 (Stable)**
+* **Input:** `hard_breach=no; stable_allowed=yes; overload=0; traffic=eMBB-voice`
+* **QoS State:** **안정 (Stable)**
+* **Reason:** 모든 KPI 수치가 정상 범위 내 위치
+* **Action:** 현재 슬라이스 정책 유지 및 모니터링 지속
+
+---
+
+### 💡 학습 포인트
+* **의사결정 구조:** `hard_breach` 여부에 따른 상태 분기 학습
+* **조치 최적화:** 장애 원인(지연, 손실, 과부하 등)에 최적화된 Action 매칭
+* **문맥 파악:** 서비스 유형(`traffic`)별 요구사항에 따른 유연한 판정 유도
+
+---
+
 ## 17. 실패 원인 분석
 
 ### 17-1. 핵심 증상
