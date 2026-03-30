@@ -17,7 +17,6 @@
 | 최대 샘플 수 설정 | `MAX_SAMPLES = 50` (실제 실행 결과: train 400 / val 50 / test 50) |
 | 최적화 대상 | Jetson Orin Nano + Llama 3.2 1B-Instruct (Nvidia DGX로 검증) |
 
-이 스크립트는 단순 포맷 변환기가 아니다.  
 CSV 한 row를 `(system, instruction, output)` 쌍으로 바꾸는 **규칙 기반 데이터셋 생성기**이며,  
 모델이 학습·추론 시 볼 입력(`instruction`)과 정답(`output`)을 **동시에 이 스크립트가 만들어낸다**.
 
