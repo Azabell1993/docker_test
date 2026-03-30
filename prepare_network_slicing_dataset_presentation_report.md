@@ -958,8 +958,7 @@ AI 모델의 상태 분류 및 대응을 위한 3대 핵심 규칙입니다.
 | SYSTEM_PROMPT `FEW_SHOT_EXAMPLES` | `hard_breach=...; stable_allowed=...; ...; traffic=...; overload=...` ← **hard_breach 선두** |
 
 모델이 few-shot에서 학습한 "hard_breach=yes → 첫 번째 키 → QoS state: critical" 연결 고리가  
-실제 입력(hard_breach가 7번째 키)에서는 위치적으로 동작하지 않는다.  
-→ **JSONL 재생성 후 재평가 필요**
+실제 입력(hard_breach가 7번째 키)에서는 위치적으로 동작하지 않는다.
 
 ### 17-3. 원인 2 — 1B 모델의 명령 추종 한계
 
