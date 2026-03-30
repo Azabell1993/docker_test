@@ -1,4 +1,4 @@
-# prepare_network_slicing_dataset.py — 완전 기술 레포트
+# prepare_network_slicing_dataset.py 레포트
 
 > **대상 파일**: `jetson_slm_stack/dataset/scripts/prepare_network_slicing_dataset.py`  
 > **작성 기준**: 2026-03-30 현재 코드 실체 + 평가 실행 결과 반영  
