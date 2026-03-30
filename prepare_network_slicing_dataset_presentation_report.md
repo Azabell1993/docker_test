@@ -836,25 +836,7 @@ bash test_dataset.sh llama --split test --api chat --max 30
 
 **결과 파일**: `test_slm_output/dataset_eval_llama_test_20260330_003535.jsonl`
 
-### 16-1. 정확도 요약
-
-| 항목 | 이전 실행 (2026-03-29) | 이번 실행 (2026-03-30) |
-|---|---|---|
-| 평가 샘플 수 | 30건 (완료) | **9건 (중단)** |
-| 기대 레이블 분포 | critical: 30개 (100%) | critical: 9개 (100%) |
-| 모델 출력 분포 | degraded: 30개 (100%) | **degraded: 9개 (100%)** |
-| **QoS state 정확도** | **0 / 30 = 0.0%** | **0 / 9 = 0.0%** |
-
-### 16-2. 성능 지표
-
-| 지표 | 이전 (2026-03-29) | 이번 (2026-03-30) | 변화 |
-|---|---|---|---|
-| `prompt_tokens` | 508 tokens | **331 tokens** | ▼ −177 (truncation 해소) |
-| `completion_tokens` | 34 tokens | **30.2 tokens** | ≈ 동일 |
-| `latency_sec` | 53.6 sec/req | **18.66 sec/req** | ▼ −65% |
-| `tokens_per_sec` | 0.635 tok/s | **1.621 tok/s** | ▲ +2.6× |
-
-### 16-3. 샘플별 상세 (3건)
+### 16-1. 샘플별 상세 (3건)
 
 **Sample 1 — network-slicing-00009**
 
