@@ -929,8 +929,19 @@ prior next-token probability 앞에서 억제하지 못하는 경향이 있다.
 | **`hard_breach=yes` → critical 규칙** | 0/30 (0%) | 30건 전부 `degraded` 출력, SYSTEM_PROMPT의 Mandatory rules 무시 |
 | **`packet_loss_abnormal=yes` → critical 규칙** | 0/6 (0%) | 6건 전부 무시, 이 플래그도 분류에 영향 없음 |
 | **`signal_critical=yes` → critical 규칙** | 0/7 (0%) | 7건 전부 무시, 가장 강한 조건도 무시 |
-| **복합 위반(sig+pkt 동시) → critical** | 0/1 (0%) | 두 플래그 동시 yes여도 무시 |
+| **복합 위반(signal(신호 상태)+packet(패킷 손실) --> 동시) → critical** | 0/1 (0%) | 두 플래그 동시 yes여도 무시 |
 | **QoS state 레이블 결정 정확도** | 0/30 (0%) | 모든 경우에서 `degraded`로 수렴 |
 | **`stable` 레이블 출력** | — | test split에 stable 기대 샘플 없어 미검증 (별도 평가 필요) |
 
 ---
+#### 복합 위반 부연 설명
+- 복합 위반인데도 critical로 못 감 = rule 무시
+
+##### signal
+> signal_critical = rsrp_dbm < -110.0
+- (무선 신호가 임계값 이하 → 통신 품질 매우 나쁨)
+
+##### packet
+> packet_loss_abnormal = loss_pct >= 70.0
+packet_loss_exceeds_per = loss_pct > per_pct
+- 패킷 손실률이 비정상적으로 높음 → 데이터 전달 실패
