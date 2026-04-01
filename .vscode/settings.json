@@ -1,0 +1,19 @@
+{
+  "python.analysis.exclude": [
+    "jetson_slm_stack/models/**",
+    "jetson_slm_stack/outputs/**",
+    "jetson_slm_stack/dataset/prepared/**",
+    "jetson_slm_stack/dataset/raw/**",
+    "test_slm_output/**"
+  ],
+  "files.watcherExclude": {
+    "**/jetson_slm_stack/models/**": true,
+    "**/jetson_slm_stack/outputs/**": true,
+    "**/test_slm_output/**": true
+  },
+  "search.exclude": {
+    "**/jetson_slm_stack/models/**": true,
+    "**/jetson_slm_stack/outputs/**": true,
+    "**/test_slm_output/**": true
+  }
+}

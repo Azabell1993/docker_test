@@ -1,0 +1,86 @@
+{
+  "total_records": 10,
+  "counts_by_severity": {
+    "normal": 0,
+    "warning": 3,
+    "critical": 7
+  },
+  "counts_by_root_cause": {
+    "radio_retainability_failure": 3,
+    "indeterminate": 4,
+    "cell_edge_or_mobility_instability": 1,
+    "transport_or_core_issue": 1,
+    "radio_coverage_degradation": 1
+  },
+  "top_features_download": [
+    {
+      "feature": "signal_strength_dbm",
+      "importance": 0.3
+    },
+    {
+      "feature": "congestion_encoded",
+      "importance": 0.2
+    },
+    {
+      "feature": "latency_ms",
+      "importance": 0.18
+    },
+    {
+      "feature": "ping_google_ms",
+      "importance": 0.1
+    },
+    {
+      "feature": "jitter_ms",
+      "importance": 0.08
+    }
+  ],
+  "top_features_drop": [
+    {
+      "feature": "signal_strength_dbm",
+      "importance": 0.35
+    },
+    {
+      "feature": "handover_count",
+      "importance": 0.2
+    },
+    {
+      "feature": "congestion_encoded",
+      "importance": 0.15
+    },
+    {
+      "feature": "ping_google_ms",
+      "importance": 0.13
+    },
+    {
+      "feature": "latency_ms",
+      "importance": 0.09
+    }
+  ],
+  "threshold_violation_stats": {
+    "signal_strength_dbm": {
+      "normal": 0,
+      "warning": 3,
+      "critical": 2
+    },
+    "dropped_connection": {
+      "normal": 0,
+      "warning": 0,
+      "critical": 4
+    },
+    "network_congestion_level": {
+      "normal": 0,
+      "warning": 3,
+      "critical": 4
+    },
+    "handover_count": {
+      "normal": 0,
+      "warning": 4,
+      "critical": 0
+    },
+    "ping_google_ms": {
+      "normal": 0,
+      "warning": 6,
+      "critical": 0
+    }
+  }
+}

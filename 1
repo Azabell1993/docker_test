@@ -1,0 +1,57 @@
+(.venv) kmu-scrc@kmuscrc-desktop:~/jiwoo_research_docker$  cd /home/kmu-scrc/jiwoo_research_docker && source .venv/bin/activate && pip install pandas numpy scikit-learn -q && python jetson_slm_stack/dataset/scripts/network_traffic_dataset.py 2>&1
+[pipeline] 5G Network Traffic QoS/QoE Diagnosis Engine
+[pipeline] CSV       : /home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack/dataset/raw/network_traffic/5g_network_data.csv
+[pipeline] output_dir: /home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack/dataset/prepared/network_traffic
+[phase-1] loaded 50000 rows, 21 columns
+[phase-6] computing global feature importance ...
+[phase-6] method: rf_impurity
+[phase-6] top-3 -> download_speed      : [('upload_speed_mbps', np.float64(0.1321621540400911)), ('ping_google_ms', np.float64(0.12487207555741354)), ('signal_strength_dbm', np.float64(0.12265876304481192))]
+[phase-6] top-3 -> dropped_connection  : [('upload_speed_mbps', np.float64(0.12863755310956176)), ('ping_google_ms', np.float64(0.1248963552430304)), ('jitter_ms', np.float64(0.12167523589682377))]
+[pipeline] diagnosed 50000 records
+
+[summary] counts_by_severity    : {'normal': 498, 'warning': 9842, 'critical': 39660}
+[summary] counts_by_root_cause  : {'radio_retainability_failure': 12392, 'indeterminate': 18814, 'cell_edge_or_mobility_instability': 5076, 'transport_or_core_issue': 10688, 'radio_coverage_degradation': 2921, 'device_side_factor': 109}
+[summary] top features -> download : [('upload_speed_mbps', np.float64(0.1322)), ('ping_google_ms', np.float64(0.1249)), ('signal_strength_dbm', np.float64(0.1227)), ('jitter_ms', np.float64(0.1221)), ('temperature_celsius', np.float64(0.1172))]
+[summary] top features -> drop     : [('upload_speed_mbps', np.float64(0.1286)), ('ping_google_ms', np.float64(0.1249)), ('jitter_ms', np.float64(0.1217)), ('signal_strength_dbm', np.float64(0.1214)), ('temperature_celsius', np.float64(0.1175))]
+[export] diagnosis -> /home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack/dataset/prepared/network_traffic/network_traffic_diagnosis.jsonl  (50000 records)
+[export] summary  -> /home/kmu-scrc/jiwoo_research_docker/jetson_slm_stack/dataset/prepared/network_traffic/network_traffic_summary.json
+
+========================================================================
+EXAMPLE TEST ROWS -- PER-RECORD DIAGNOSIS
+========================================================================
+
+-- Row 1: San Francisco | 2025-05-28 06:59:51 --
+   severity_level        : critical
+   inferred_root_cause   : radio_retainability_failure
+   confidence_rule_basis : R3: dropped_connection+signal_weak -> radio_retainability_failure
+   recommended_action    :
+     Immediate RAN investigation: verify RACH failure rate, RLF counter, and RRC re-establishment success ratio.
+     Trigger forced handover or beam recovery procedure for affected UE..
+   breached_kpis         :
+     * signal_strength_dbm: -108.6  [critical]  threshold < -100.0 dBm
+     * dropped_connection: True  [critical]  threshold == True
+     * network_congestion_level: High  [critical]  threshold == High
+   local_rule_weights    : {'signal_strength_dbm': 0.3333, 'dropped_connection': 0.3333, 'network_congestion_level': 0.3333}
+
+-- Row 2: New York | 2025-05-28 06:29:51 --
+   severity_level        : critical
+   inferred_root_cause   : indeterminate
+   confidence_rule_basis : KPIs breached but no specific rule matched
+   recommended_action    :
+     Insufficient evidence for root-cause; perform full E2E trace..
+   breached_kpis         :
+     * ping_google_ms: 87.5  [critical]  threshold > 80.0 ms
+     * network_congestion_level: High  [critical]  threshold == High
+   local_rule_weights    : {'ping_google_ms': 0.5, 'network_congestion_level': 0.5}
+
+-- Row 3: Chennai | 2025-05-28 06:39:51 --
+   severity_level        : warning
+   inferred_root_cause   : indeterminate
+   confidence_rule_basis : KPIs breached but no specific rule matched
+   recommended_action    :
+     KPI drift observed; continue monitoring to establish trend..
+   breached_kpis         :
+     * ping_google_ms: 75.5  [warning]  threshold [30.0, 80.0) ms
+   local_rule_weights    : {'ping_google_ms': 1.0}
+
+========================================================================

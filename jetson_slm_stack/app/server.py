@@ -248,10 +248,6 @@ def _configure_cpu_runtime(cfg: AppConfig) -> Dict[str, int]:
         "cpu_threads": int(intra_threads),
         "cpu_interop_threads": int(interop_threads),
     }
-    def is_memory_error(cls, exc: BaseException) -> bool:
-        """예외 메시지로부터 OOM 여부를 판별한다."""
-        msg = str(exc).lower()
-        return any(p in msg for p in cls.OOM_PATTERNS)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -469,6 +465,18 @@ class ModelLoader:
                     "[INFO] 고정 CUDA 하이브리드 로드 성공 "
                     f"— budget={budget_mb}MiB, gpu_layers={gpu_layers}, dtype={split_dtype}"
                 )
+                # cuda-fixed 분할 로드 후 accelerate가 붙인 AlignDevicesHook을 모두 제거한다.
+                # hook이 남아 있으면 forward() 마다 파라미터를 CUDA로 재이동하려다
+                # Jetson nvmap 연속 블록 한도(~1GB)에 걸려 CUDACachingAllocator assert가 발생한다.
+                # 파라미터는 이미 from_pretrained에서 device_map 대로 배치되었으므로
+                # hook 없이도 정상 동작한다.
+                try:
+                    from accelerate import dispatch_model
+                    from accelerate.hooks import remove_hook_from_module
+                    remove_hook_from_module(model_obj, recurse=True)
+                    print("[INFO] 모든 AlignDevicesHook 제거 완료")
+                except Exception as patch_err:
+                    print(f"[WARN] hook 제거 실패 (무시): {patch_err}")
                 return model_obj, "cuda", f"cuda-fixed-{gpu_layers}l-{budget_mb}mb"
 
             print("[WARN] 고정 CUDA 하이브리드 로드가 GPU 레이어를 배치하지 못함")
